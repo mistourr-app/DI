@@ -4,8 +4,6 @@ export class GameScene extends Phaser.Scene {
   private enemies!: Phaser.GameObjects.Group;
   private base!: Phaser.GameObjects.Rectangle;
   private debugText!: Phaser.GameObjects.Text;
-  private enemyCount: number = 0;
-  private maxEnemies: number = 20;
   
   // Зоны экрана
   private battlefieldZone!: Phaser.Geom.Rectangle;
@@ -13,6 +11,24 @@ export class GameScene extends Phaser.Scene {
   private gameArea!: Phaser.Geom.Rectangle;
   private battlefieldGraphics!: Phaser.GameObjects.Graphics;
   private baseZoneGraphics!: Phaser.GameObjects.Graphics;
+  
+  // Настройки спавна врагов
+  private totalEnemiesToSpawn: number = 25000;  // Общее количество монстров для спавна
+  private enemiesSpawned: number = 0;        // Сколько уже заспавнено
+  private maxEnemiesOnScreen: number = 1000;   // Максимум на экране
+  private enemyCount: number = 0;           // Текущее количество на экране
+  
+  // Здоровье базы
+  private baseHealth: number = 1000;        // Начальное здоровье базы
+  private baseMaxHealth: number = 1000;     // Максимальное здоровье
+  
+  // Таймеры
+  private spawnTimer: number = 0;           // Таймер для спавна
+  private spawnInterval: number = 30;       // Интервал спавна (мс)
+  
+  // Настройки монстров
+  private enemySpeed: number = 0.5;        // Базовая скорость монстров
+  private enemySize: number = 5;           // Размер монстров
 
   // Константы
   private static readonly BATTLEFIELD_RATIO = 5 / 6;
@@ -45,11 +61,17 @@ export class GameScene extends Phaser.Scene {
     // Создаем группу для врагов
     this.enemies = this.add.group();
 
-    // Создаем начальных врагов в поле боя
-    this.createInitialEnemies();
+    // Инициализируем счётчики
+    this.enemyCount = 0;
+    this.enemiesSpawned = 0;
+    this.baseHealth = this.baseMaxHealth;
+    this.spawnTimer = 0;
 
-    // Debug текст для информации (FPS и количество монстров)
+    // Debug текст для информации
     this.createDebugText();
+
+    // Панель контролов для дебага (вне игрового поля)
+    this.createDebugControls();
 
     // Настраиваем управление
     this.setupInput();
@@ -76,6 +98,14 @@ export class GameScene extends Phaser.Scene {
     if (this.base) this.base.destroy();
     this.createBase();
     this.createElements();
+
+    // Пересоздаем панель дебаг-контролов при изменении размера
+    this.createDebugControls();
+
+    // Обновляем позицию дебаг текста
+    if (this.debugText && this.gameArea) {
+      this.debugText.setPosition(this.gameArea.x + 10, this.gameArea.y + 10);
+    }
 
     this.setupCamera();
   }
@@ -264,24 +294,25 @@ export class GameScene extends Phaser.Scene {
   }
   
   private createDebugText(): void {
-    this.debugText = this.add.text(10, 10, '', {
+    // Позиционируем в левом верхнем углу игрового поля (9:19.5)
+    const debugX = this.gameArea ? this.gameArea.x + 10 : 10;
+    const debugY = this.gameArea ? this.gameArea.y + 10 : 10;
+    
+    this.debugText = this.add.text(debugX, debugY, '', {
       font: '16px monospace',
       color: '#ffffff',
       backgroundColor: '#00000080',
       padding: { x: 8, y: 4 }
     });
-    this.debugText.setScrollFactor(0);
-  }
-
-  private createInitialEnemies(): void {
-    for (let i = 0; i < this.maxEnemies; i++) {
-      this.createEnemy();
-    }
+    // Поднимаем текст на максимальный depth, чтобы был выше всех монстров
+    this.debugText.setDepth(1000);
+    // Если gameArea есть, то текст будет внутри игрового поля
+    // Если нет — в углу экрана
   }
 
   private createEnemy(): void {
-    // Враги спаунятся только в верхней части поля боя
-    const spawnZoneHeight = this.battlefieldZone.height * 0.2;
+    // Враги спаунятся НАД верхней границей поля боя (выше экрана)
+    const spawnY = this.battlefieldZone.y - 20; // 20 пикселей выше верхней границы поля боя
     
     const x = Phaser.Math.Between(
       this.battlefieldZone.x + 20,
@@ -289,27 +320,40 @@ export class GameScene extends Phaser.Scene {
     );
     
     const y = Phaser.Math.Between(
-      this.battlefieldZone.y + 10,
-      this.battlefieldZone.y + spawnZoneHeight
+      spawnY - 10,
+      spawnY + 10
     );
 
-    // Адаптивный размер врага
-    const enemySize = Math.max(8, Math.min(this.battlefieldZone.width * 0.02, 20));
+    // Создаем врага с настраиваемым размером
+    const enemy = this.add.circle(x, y, this.enemySize, 0xff0000);
     
-    // Создаем врага
-    const enemy = this.add.circle(x, y, enemySize, 0xff0000);
+    // Увеличиваем счётчики
+    this.enemyCount++;
+    this.enemiesSpawned++;
+    
+    // Начальная скорость с настройками (движение вниз к базе)
     enemy.setData('velocity', {
-      x: Phaser.Math.FloatBetween(-0.2, 0.2),
-      y: Phaser.Math.FloatBetween(0.5, 1.0)
+      x: Phaser.Math.FloatBetween(-0.1, 0.1),
+      y: this.enemySpeed
     });
     
     enemy.setStrokeStyle(2, 0xff5555);
 
     this.enemies.add(enemy);
-    this.enemyCount++;
   }
 
   update(): void {
+    // Обновляем таймер спавна
+    this.spawnTimer += this.game.loop.delta; // delta в мс
+    
+    // Спавн новых врагов, если нужно
+    if (this.spawnTimer >= this.spawnInterval && 
+        this.enemyCount < this.maxEnemiesOnScreen && 
+        this.enemiesSpawned < this.totalEnemiesToSpawn) {
+      this.createEnemy();
+      this.spawnTimer = 0;
+    }
+
     // Обновляем движение врагов
     this.updateEnemyMovement();
 
@@ -320,30 +364,39 @@ export class GameScene extends Phaser.Scene {
   private updateEnemyMovement(): void {
     const baseX = this.base.x;
     const baseY = this.base.y;
-    const baseRadius = this.base.width / 2;
 
     this.enemies.getChildren().forEach((enemy: any) => {
-      const velocity = enemy.getData('velocity');
+      // Хранимые данные врага
+      let velocity = enemy.getData('velocity');
       
-      // Основное движение вниз (к базе)
+      // Инициализация при первом создании
+      if (!velocity) {
+        velocity = { x: 0, y: this.enemySpeed };
+      }
+      
+      // Vector к базе
       const dx = baseX - enemy.x;
       const dy = baseY - enemy.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
       
-      // Усиливаем движение вниз
-      velocity.y += 0.1;
+      // Нормализованное направление к базе
+      const dirX = distance > 0 ? dx / distance : 0;
+      const dirY = distance > 0 ? dy / distance : 1;
       
-      // Корректируем горизонтальное движение к центру базы
-      if (distance > 0) {
-        velocity.x += dx / distance * 0.03;
-      }
+      // Базовая скорость движения к базе
+      const targetSpeed = this.enemySpeed;
       
-      // Добавляем небольшой случайный шум
-      velocity.x += Phaser.Math.FloatBetween(-0.05, 0.05);
-      velocity.y += Phaser.Math.FloatBetween(-0.02, 0.02);
-
-      // Ограничение скорости
-      const maxSpeed = 3.0;
+      // Прямо задаём скорость как вектор к базе (без накопления!)
+      // 90% скорости идёт прямо к базе, 10% случайное отклонение
+      velocity.x = dirX * targetSpeed;
+      velocity.y = dirY * targetSpeed;
+      
+      // Минимальный случайный шум (очень небольшой)
+      velocity.x += Phaser.Math.FloatBetween(-0.01, 0.01);
+      velocity.y += Phaser.Math.FloatBetween(-0.01, 0.01);
+      
+      // Ограничение скорости (не даём превышать targetSpeed + небольшой запас)
+      const maxSpeed = targetSpeed * 1.05;
       const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
       if (speed > maxSpeed) {
         velocity.x = (velocity.x / speed) * maxSpeed;
@@ -353,6 +406,11 @@ export class GameScene extends Phaser.Scene {
       // Обновление позиции
       enemy.x += velocity.x;
       enemy.y += velocity.y;
+      
+      // Обновляем размер врага если изменился enemySize
+      if (enemy.radius !== this.enemySize) {
+        enemy.setRadius(this.enemySize);
+      }
       
       // Проверка выхода за границы поля боя
       if (enemy.x < this.battlefieldZone.x + 10) {
@@ -371,15 +429,12 @@ export class GameScene extends Phaser.Scene {
         velocity.y = Math.abs(velocity.y) * 0.5;
       }
 
-      // Сохраняем обновленную скорость
+      // Сохраняем скорость
       enemy.setData('velocity', velocity);
 
-      // Проверка достижения базы
-      if (enemy.y > this.baseZone.y) {
-        const distanceToBase = Phaser.Math.Distance.Between(enemy.x, enemy.y, baseX, baseY);
-        if (distanceToBase < baseRadius + enemy.radius) {
-          this.handleEnemyReachedBase(enemy);
-        }
+      // Проверка достижения области базы (не иконки, а зоны)
+      if (this.baseZone.contains(enemy.x, enemy.y)) {
+        this.handleEnemyReachedBase(enemy);
       }
     });
   }
@@ -388,15 +443,32 @@ export class GameScene extends Phaser.Scene {
     // Визуальный эффект при достижении базы
     this.createHitEffect(enemy.x, enemy.y);
     
+    // Уменьшаем здоровье базы
+    this.baseHealth = Math.max(0, this.baseHealth - 1);
+    
     // Удаляем врага
     enemy.destroy();
     this.enemyCount--;
 
-    // Создаем нового врага в поле боя
-    this.createEnemy();
-    
-    // Небольшая тряска камеры для feedback
-    this.cameras.main.shake(100, 0.01);
+    // Если база разбита
+    if (this.baseHealth <= 0) {
+      this.showGameOver();
+    }
+  }
+
+  private showGameOver(): void {
+    const gameOverText = this.add.text(
+      this.cameras.main.centerX,
+      this.cameras.main.centerY,
+      'GAME OVER!',
+      {
+        font: '48px Arial',
+        color: '#ff0000',
+        stroke: '#000000',
+        strokeThickness: 4
+      }
+    );
+    gameOverText.setOrigin(0.5);
   }
   
   private createHitEffect(x: number, y: number): void {
@@ -419,11 +491,160 @@ export class GameScene extends Phaser.Scene {
   private updateDebugInfo(): void {
     if (!this.debugText) return;
     
+    const healthPercent = Math.round((this.baseHealth / this.baseMaxHealth) * 100);
+    
+    // Компактный текст в 3 строки, чтобы поместиться в игровом поле
     this.debugText.setText([
-      `Монстров: ${this.enemyCount}`,
-      `FPS: ${Math.round(this.game.loop.actualFps)}`,
-      `Игра: ${this.gameArea?.width.toFixed(0)}x${this.gameArea?.height.toFixed(0)}`
-    ].join(' | '));
+      `HP: ${this.baseHealth}/${this.baseMaxHealth} (${healthPercent}%)`,
+      `Мон: ${this.enemyCount}/${this.maxEnemiesOnScreen} | Spawn: ${this.spawnInterval}мс`,
+      `Спавн: ${this.enemiesSpawned}/${Math.floor(this.totalEnemiesToSpawn/1000)}K | Spd: ${this.enemySpeed.toFixed(2)} | Sz: ${this.enemySize} | FPS: ${Math.round(this.game.loop.actualFps)}`
+    ]);
+    
+    // Позиционируем текст в левом верхнем углу игрового поля
+    if (this.gameArea) {
+      this.debugText.setPosition(this.gameArea.x + 10, this.gameArea.y + 10);
+    }
+  }
+
+  private debugControlPanel!: Phaser.GameObjects.Graphics;
+  private debugControlTexts: Phaser.GameObjects.Text[] = [];
+  
+  // Хранилище для обновления значений контролов
+  private debugControlUpdaters: Array<{ text: Phaser.GameObjects.Text, getValue: () => string }> = [];
+  
+  private createDebugControls(): void {
+    // Уничтожаем старую панель, если она есть
+    if (this.debugControlPanel) {
+      this.debugControlPanel.destroy();
+    }
+    this.debugControlTexts = [];
+    this.debugControlUpdaters = [];
+    
+    // Панель контролов в правом верхнем углу экрана (вне игрового поля)
+    const screenWidth = this.cameras.main.width;
+    const panelWidth = 220;
+    const panelHeight = 200;
+    const panelX = screenWidth - panelWidth - 10;
+    const panelY = 10;
+    
+    // Фон панели
+    this.debugControlPanel = this.add.graphics();
+    this.debugControlPanel.fillStyle(0x000000, 0.85);
+    this.debugControlPanel.fillRect(panelX, panelY, panelWidth, panelHeight);
+    this.debugControlPanel.setScrollFactor(0);
+    this.debugControlPanel.setDepth(1000);
+    
+    // Рамка панели
+    this.debugControlPanel.lineStyle(1, 0x555555, 1);
+    this.debugControlPanel.strokeRect(panelX, panelY, panelWidth, panelHeight);
+    
+    // Заголовок
+    this.add.text(panelX + 10, panelY + 5, 'DEBUG CONTROLS', {
+      font: 'bold 14px Arial',
+      color: '#ffffff'
+    }).setScrollFactor(0).setDepth(1000);
+    
+    // Отступ от верха
+    let yOffset = 25;
+    const rowHeight = 24;
+    const btnWidth = 24;
+    const valueWidth = 50;
+    
+    // Функция для создания строки контрола: [-] [значение] [+] [метка]
+    const createControlRow = (label: string, y: number, 
+      minusCallback: () => void, 
+      plusCallback: () => void,
+      getValue: () => string) => {
+      const x = panelX + 10;
+      
+      // Минус кнопка
+      const btnMinus = this.add.text(x, y, '-', {
+        font: '14px Arial',
+        color: '#ff0000',
+        backgroundColor: '#444444',
+        padding: { x: 8, y: 4 }
+      }).setScrollFactor(0).setDepth(1000).setInteractive();
+      btnMinus.on('pointerdown', () => {
+        minusCallback();
+        this.updateDebugControlsText();
+      });
+      btnMinus.on('pointerover', () => btnMinus.setStyle({ backgroundColor: '#666666' }));
+      btnMinus.on('pointerout', () => btnMinus.setStyle({ backgroundColor: '#444444' }));
+      
+      // Значение (будем обновлять через updaters)
+      const valueText = this.add.text(x + btnWidth + 6, y, getValue(), {
+        font: 'bold 14px Arial',
+        color: '#ffffff'
+      }).setScrollFactor(0).setDepth(1000);
+      this.debugControlTexts.push(valueText);
+      this.debugControlUpdaters.push({ text: valueText, getValue });
+      
+      // Плюс кнопка
+      const btnPlus = this.add.text(x + btnWidth + 12 + valueWidth, y, '+', {
+        font: '14px Arial',
+        color: '#00ff00',
+        backgroundColor: '#444444',
+        padding: { x: 8, y: 4 }
+      }).setScrollFactor(0).setDepth(1000).setInteractive();
+      btnPlus.on('pointerdown', () => {
+        plusCallback();
+        this.updateDebugControlsText();
+      });
+      btnPlus.on('pointerover', () => btnPlus.setStyle({ backgroundColor: '#666666' }));
+      btnPlus.on('pointerout', () => btnPlus.setStyle({ backgroundColor: '#444444' }));
+      
+      // Метка
+      this.add.text(x + btnWidth + 12 + valueWidth + btnWidth + 4, y, label, {
+        font: '14px Arial',
+        color: '#bbbbbb'
+      }).setScrollFactor(0).setDepth(1000);
+    };
+    
+    // Spawn Interval (мс)
+    createControlRow('мс', yOffset, 
+      () => { this.spawnInterval = Math.max(10, this.spawnInterval - 10); },
+      () => { this.spawnInterval = Math.min(5000, this.spawnInterval + 10); },
+      () => `${this.spawnInterval}`
+    );
+    yOffset += rowHeight;
+    
+    // Total Enemies (тыс.)
+    createControlRow('тыс.', yOffset,
+      () => { this.totalEnemiesToSpawn = Math.max(100, this.totalEnemiesToSpawn - 100); },
+      () => { this.totalEnemiesToSpawn += 100; },
+      () => `${Math.floor(this.totalEnemiesToSpawn / 1000)}K`
+    );
+    yOffset += rowHeight;
+    
+    // Max On Screen
+    createControlRow('макс.', yOffset,
+      () => { this.maxEnemiesOnScreen = Math.max(10, this.maxEnemiesOnScreen - 10); },
+      () => { this.maxEnemiesOnScreen = Math.min(1000, this.maxEnemiesOnScreen + 10); },
+      () => `${this.maxEnemiesOnScreen}`
+    );
+    yOffset += rowHeight;
+    
+    // Enemy Speed
+    createControlRow('скор.', yOffset,
+      () => { this.enemySpeed = Math.max(0.1, this.enemySpeed - 0.05); },
+      () => { this.enemySpeed = Math.min(10, this.enemySpeed + 0.05); },
+      () => `${this.enemySpeed.toFixed(2)}`
+    );
+    yOffset += rowHeight;
+    
+    // Enemy Size
+    createControlRow('разм.', yOffset,
+      () => { this.enemySize = Math.max(2, this.enemySize - 1); },
+      () => { this.enemySize = Math.min(50, this.enemySize + 1); },
+      () => `${this.enemySize}`
+    );
+  }
+  
+  private updateDebugControlsText(): void {
+    // Обновляем все текстовые поля значений
+    this.debugControlUpdaters.forEach(updater => {
+      updater.text.setText(updater.getValue());
+    });
   }
 
   private setupInput(): void {
