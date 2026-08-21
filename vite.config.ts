@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  base: '/DI/', // ✅ Base path для GitHub Pages (https://mistourr-app.github.io/DI/)
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
@@ -13,14 +14,31 @@ export default defineConfig({
         theme_color: '#1a1a2e',
         icons: [
           {
-            src: 'pwa-192x192.png',
+            src: '/DI/pwa-192x192.png',
             sizes: '192x192',
             type: 'image/png'
           },
           {
-            src: 'pwa-512x512.png',
+            src: '/DI/pwa-512x512.png',
             sizes: '512x512',
             type: 'image/png'
+          }
+        ]
+      },
+      workbox: {
+        globDirectory: 'dist/',
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/.*\.github\.io\/.*/,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'github-pages-cache',
+              expiration: {
+                maxEntries: 10,
+                maxAgeSeconds: 60 * 60 * 24 * 30 // 30 дней
+              }
+            }
           }
         ]
       }
