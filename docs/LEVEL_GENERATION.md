@@ -227,4 +227,4 @@ level.spawnPoints;  // центры входов (сцена используе�
 ## 🔗 12. Ссылки
 - [Game Design Document](../GAME_DESIGN_DOCUMENT.md)
 - **Код:** `src/game/generation/LevelGenerator.ts`, `src/scenes/GameScene.ts`
-- **Референс:** [Sir, we have an orc problem](https://store.steampowered.com/app/1234560/Sir_we_have_an_Orc_Problem/) (поведение толпы как жидкость)
+- **Референс:** [Sir, We Have an Orc Problem](https://store.steampowered.com/app/4594150/Sir_We_Have_an_Orc_Problem/) (поведение толпы как жидкость; толпа течёт к базе «реками», игрок пишет «basically a fluid simulation»)
