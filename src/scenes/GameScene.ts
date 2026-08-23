@@ -51,8 +51,8 @@ export class GameScene extends Phaser.Scene {
   private levelSeed: string = 'seed-' + Math.floor(Math.random() * 1e9).toString(36);
   private spawnGateIdx: number = 0; // раунд-робин по входам
   // Параметры генерации (крутятся в дебаг поп-апе)
-  private genDensity: number = 0.4;
-  private genBlobScale: number = 1.0;
+  private genDensity: number = 1.1;
+  private genBlobScale: number = 0.3;
 
   // Fluid simulation: физика толпы в воркере (fallback — main-thread путь)
   private fluidCtrl!: FluidSimulationController;
@@ -430,9 +430,11 @@ export class GameScene extends Phaser.Scene {
       // так все входы задействованы равномерно
       this.spawnGateIdx = (this.spawnGateIdx + 1) % ents.length;
       const e = ents[this.spawnGateIdx];
-      // На всю ширину входа, без отступов от его краёв
+      // На всю ширину входа, без отступов от его краёв.
+      // Клэмп = коридору движения физики (EDGE_MARGIN=10 + запас):
+      // иначе спавн у кромки телепортом слипается в колонну на стенке
       const localX = e.x + Phaser.Math.FloatBetween(-e.width / 2, e.width / 2);
-      x = zone.x + Phaser.Math.Clamp(localX, 2, zone.width - 2);
+      x = zone.x + Phaser.Math.Clamp(localX, 14, zone.width - 14);
     } else {
       x = Phaser.Math.Between(zone.x + 20, zone.x + zone.width - 20);
     }
@@ -951,7 +953,7 @@ export class GameScene extends Phaser.Scene {
     );
 
     addRow('Размер структур',
-      () => { this.genBlobScale = Math.max(0.3, +(this.genBlobScale - 0.1).toFixed(1)); this.generateLevel(); },
+      () => { this.genBlobScale = Math.max(0.1, +(this.genBlobScale - 0.1).toFixed(1)); this.generateLevel(); },
       () => { this.genBlobScale = Math.min(3, +(this.genBlobScale + 0.1).toFixed(1)); this.generateLevel(); },
       () => `x${this.genBlobScale.toFixed(1)}`
     );
@@ -1015,8 +1017,8 @@ export class GameScene extends Phaser.Scene {
       this.syncFluidParams();
     });
     makeReset(px + 14 + btnHw + 8, btnHw, 'Сброс генерации', () => {
-      this.genDensity = 0.4;
-      this.genBlobScale = 1.0;
+      this.genDensity = 1.1;
+      this.genBlobScale = 0.3;
       this.updatePopupValues();
       this.generateLevel();
     });
