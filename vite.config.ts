@@ -2,10 +2,12 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  // GitHub Pages публикует репозиторий в подкаталог: /DI/
+  base: '/DI/',
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
+      includeAssets: ['favicon.png', 'apple-touch-icon.png'],
       manifest: {
         name: 'Fluid Crowd Defense',
         short_name: 'FluidGame',
@@ -13,12 +15,12 @@ export default defineConfig({
         theme_color: '#1a1a2e',
         icons: [
           {
-            src: '/DI/pwa-192x192.png',
+            src: 'pwa-192x192.png',
             sizes: '192x192',
             type: 'image/png'
           },
           {
-            src: '/DI/pwa-512x512.png',
+            src: 'pwa-512x512.png',
             sizes: '512x512',
             type: 'image/png'
           }
