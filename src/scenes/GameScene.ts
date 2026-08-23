@@ -8,6 +8,9 @@ import { GameConfig } from '../game/config/GameConfig';
 const ENEMY_TEX_RADIUS = 8;
 // Период обновления дебаг-текста, мс (setText растеризует текстуру — нельзя каждый кадр)
 const DEBUG_TEXT_INTERVAL = 250;
+// Границы адаптивного кегля дебаг-панели
+const DEBUG_FONT_MAX = 16;
+const DEBUG_FONT_MIN = 9;
 // Заводские множители сил жидкости — для кнопки сброса слайдеров
 const FLUID_DEFAULTS = { ...GameConfig.enemies.fluid };
 
@@ -51,8 +54,10 @@ export class GameScene extends Phaser.Scene {
   // Fluid simulation: физика толпы в воркере (fallback — main-thread путь)
   private fluidCtrl!: FluidSimulationController;
   private spriteById = new Map<number, Phaser.GameObjects.Image>();
-  /** Сглаженная длительность шага воркера, мс (EMA по кадрам) */
+  // Сглаженная длительность шага воркера, мс (EMA по кадрам)
   private simStepMs: number = 0;
+  /** Текущий кегль дебаг-панели (чтобы не дёргать setStyle без изменений) */
+  private debugFontSize: number = 0;
 
   // Константы
   private static readonly BATTLEFIELD_RATIO = 5 / 6;
@@ -383,10 +388,26 @@ export class GameScene extends Phaser.Scene {
     this.placeDebugText();
   }
 
-  /** Панель инфо у верхней кромки поля боя — всегда внутри игровой области */
+  /** Панель инфо у верхней кромки поля боя — всегда внутри игровой области.
+   *  Кегль адаптивный: строка + кнопка ⚙ обязаны помещаться в ширину поля */
   private placeDebugText(): void {
     if (!this.debugText || !this.gameArea) return;
     this.debugText.setPosition(this.gameArea.x + 8, this.gameArea.y + 4);
+
+    // Самая длинная строка панели ~38 символов; моноширинный глиф ~0.62 кегля
+    const avail = this.gameArea.width - 16 - 52;
+    let size = DEBUG_FONT_MAX;
+    while (size > DEBUG_FONT_MIN && size * 0.62 * 38 > avail) size--;
+
+    if (size !== this.debugFontSize) {
+      this.debugFontSize = size;
+      this.debugText.setStyle({
+        font: `${size}px monospace`,
+        color: '#ffffff',
+        backgroundColor: '#00000080',
+        padding: { x: 8, y: 4 }
+      });
+    }
   }
 
   private createEnemy(): void {
@@ -716,12 +737,12 @@ export class GameScene extends Phaser.Scene {
     
     const healthPercent = Math.round((this.baseHealth / this.baseMaxHealth) * 100);
     
-    // Компактный текст в 3 строки, чтобы поместиться в игровом поле
+    // Компактный текст в 3 строки (расчётная ширина ~38 символов — см. placeDebugText)
     const simTag = this.fluidCtrl?.isWorkerMode ? 'W' : 'M';
     this.debugText.setText([
       `HP: ${this.baseHealth}/${this.baseMaxHealth} (${healthPercent}%)`,
-      `Мон: ${this.enemyCount}/${this.maxEnemiesOnScreen} | Spawn: ${this.spawnInterval}мс`,
-      `Sim${simTag}: ${this.simStepMs.toFixed(1)}мс | Спавн: ${this.enemiesSpawned}/${Math.floor(this.totalEnemiesToSpawn/1000)}K | FPS: ${Math.round(this.game.loop.actualFps)}`
+      `Монстры: ${this.enemyCount}/${this.maxEnemiesOnScreen} | Интервал: ${this.spawnInterval}мс`,
+      `Sim${simTag}: ${this.simStepMs.toFixed(1)}мс | Всего: ${this.enemiesSpawned} | FPS: ${Math.round(this.game.loop.actualFps)}`
     ]);
     
     // Позиционируем текст у верхнего края экрана
