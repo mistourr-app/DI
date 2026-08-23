@@ -37,6 +37,7 @@ export class GameScene extends Phaser.Scene {
   private enemyCount: number = 0;           // Текущее количество на экране
   private victoryShown: boolean = false;     // Экран победы показан
   private gameOverShown: boolean = false;    // Экран поражения показан
+  private endText: Phaser.GameObjects.Text | null = null; // ПОБЕДА/GAME OVER
   
   // Здоровье базы
   private baseHealth: number = 1000;        // Начальное здоровье базы
@@ -730,36 +731,51 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private showGameOver(): void {
-    this.gameOverShown = true;
-    const gameOverText = this.add.text(
+  /**
+   * Финальная надпись уровня (ПОБЕДА/GAME OVER): плавно гаснет, чтобы
+   * не перекрывала поле; состояние уровня сбрасывает её принудительно
+   */
+  private showEndMessage(message: string, color: string): void {
+    if (this.endText) {
+      this.endText.destroy();
+      this.endText = null;
+    }
+    const t = this.add.text(
       this.cameras.main.centerX,
       this.cameras.main.centerY,
-      'GAME OVER!',
+      message,
       {
         font: `${48 * UI_SCALE}px Arial`,
-        color: '#ff0000',
+        color,
         stroke: '#000000',
         strokeThickness: 4 * UI_SCALE
       }
     );
-    gameOverText.setOrigin(0.5).setDepth(1100);
+    t.setOrigin(0.5).setDepth(1100);
+    this.endText = t;
+
+    this.tweens.add({
+      targets: t,
+      alpha: 0,
+      delay: 1800,
+      duration: 700,
+      onComplete: () => {
+        t.destroy();
+        if (this.endText === t) {
+          this.endText = null;
+        }
+      }
+    });
+  }
+
+  private showGameOver(): void {
+    this.gameOverShown = true;
+    this.showEndMessage('GAME OVER!', '#ff0000');
   }
 
   private showVictory(): void {
     const last = this.currentLevel >= GameScene.MAX_LEVEL;
-    const victoryText = this.add.text(
-      this.cameras.main.centerX,
-      this.cameras.main.centerY,
-      last ? 'ИГРА ПРОЙДЕНА!' : 'ПОБЕДА!',
-      {
-        font: `${48 * UI_SCALE}px Arial`,
-        color: '#ffd700',
-        stroke: '#000000',
-        strokeThickness: 4 * UI_SCALE
-      }
-    );
-    victoryText.setOrigin(0.5).setDepth(1100);
+    this.showEndMessage(last ? 'ИГРА ПРОЙДЕНА!' : 'ПОБЕДА!', '#ffd700');
   }
   
   private createHitEffect(x: number, y: number): void {
@@ -1135,10 +1151,18 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Перезапуск текущего уровня: снятие всех живых монстров, сброс
-   * счётчиков спавна и HP базы. Seed и сгенерированный лабиринт сохраняются
+   * Перезапуск текущего уровня: НОВЫЙ лабиринт (seed), снятие всех живых
+   * монстров, сброс счётчиков спавна и HP базы
    */
   private restartLevel(): void {
+    if (this.endText) {
+      this.endText.destroy();
+      this.endText = null;
+    }
+    // Каждый уровень — новая генерация
+    this.levelSeed = 'seed-' + Math.floor(Math.random() * 1e9).toString(36);
+    this.generateLevel();
+
     const children = this.enemies.getChildren() as any[];
     for (let i = 0; i < children.length; i++) {
       const e = children[i];
