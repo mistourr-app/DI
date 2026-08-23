@@ -262,6 +262,8 @@ export interface CollisionField {
   rows: number;
   cellSize: number;
   blocked: Uint8Array; // 1 = занято препятствием; вне сетки = свободно
+  /** Реальная ширина поля боя в px (может быть меньше cols*cellSize) */
+  widthPx?: number;
 }
 
 // ------------------------------------------------------------
@@ -284,6 +286,8 @@ export interface SetLevelMsg {
   rows: number;
   cellSize: number;
   blocked: ArrayBuffer; // передаётся как transferable
+  /** Реальная ширина поля в px (для корректной границы движения) */
+  widthPx?: number;
 }
 
 export interface AddAgentMsg {
@@ -370,6 +374,8 @@ function rand(amt: number): number {
 const ESCAPE_SWEEP = 1000;
 /** Подшагов свободной вертикали подряд, прежде чем сваливаться в просвет */
 const HOVER_STEPS = 4;
+/** Подряд закрыты все ходы, прежде чем включать всплытие (защита от ложных срабатываний) */
+const TRAP_STREAK = 6;
 /**
  * Непробиваемая боковая граница поля, px. Должна совпадать с внешним
  * клэмпом воркера/сцены: иначе агент скользит в буферную зону между
@@ -386,6 +392,24 @@ function outOfFieldX(x: number, fieldW: number): boolean {
 /** Держим центр агента в коридоре поля при любом движении по Y */
 function clampX(x: number, fieldW: number): number {
   return x < EDGE_MARGIN ? EDGE_MARGIN : x > fieldW - EDGE_MARGIN ? fieldW - EDGE_MARGIN : x;
+}
+
+/**
+ * Подъём на один шаг ВВЕРХ с проверкой коллизии.
+ * Сквозь препятствия карабкаться нельзя — иначе монстры «плывут» сквозь
+ * блобы у краёв поля. Если выше занято — стоим этот подшаг (соседние
+ * ветки продолжат искать ход вбок, а фейлсейф воркера страхует).
+ */
+function climbStep(
+  field: CollisionField,
+  p: { x: number; y: number },
+  r: number,
+  speed: number
+): boolean {
+  const ny = p.y - speed;
+  if (isBoxBlocked(field, p.x, ny, r)) return false;
+  p.y = ny;
+  return true;
 }
 
 /**
@@ -426,7 +450,7 @@ export function moveDownStep(
   const nx = p.x + nvx;
   const ny = p.y + nvy;
 
-  const fieldW = field.cols * field.cellSize;
+  const fieldW = field.widthPx ?? field.cols * field.cellSize;
   const flying = avoid.sweep > 0 && avoid.value !== 0;
 
   // --- Вертикаль свободна ---
@@ -465,14 +489,17 @@ export function moveDownStep(
       v.y = 0;
       return;
     }
-    // Впереди стена или край поля: не отрыв от земли, а подъём вдоль
-    // стены — подтверждение глубины обнуляем
+    // Впереди стена или край поля: подъём ВДОЛЬ стены (с коллизией!)
     avoid.hover = 0;
     avoid.sweep--;
     if (outOfFieldX(tx, fieldW)) {
       avoid.value = -avoid.value;
     }
-    p.y -= targetSpeed;
+    if (!climbStep(field, p, r, targetSpeed)) {
+      v.x = 0;
+      v.y = 0;
+      return;
+    }
     v.x = 0;
     v.y = -targetSpeed;
     return;
@@ -496,8 +523,12 @@ export function moveDownStep(
       // Край поля — разворачиваемся
       avoid.value = -avoid.value;
     }
-    // Впереди стена выше текущей высоты — всплываем дальше
-    p.y -= targetSpeed;
+    // Впереди стена выше текущей высоты — всплываем вдоль неё (с коллизией)
+    if (!climbStep(field, p, r, targetSpeed)) {
+      v.x = 0;
+      v.y = 0;
+      return;
+    }
     v.x = 0;
     v.y = -targetSpeed;
     return;
@@ -527,13 +558,17 @@ export function moveDownStep(
     // разворачиваемся — слив может быть с другой стороны
     avoid.value = -avoid.value;
     avoid.failStreak++;
-    if (avoid.failStreak >= 2) {
-      // Обе стороны закрыты подряд — всплываем и берём бюджет полёта
-      p.y -= targetSpeed;
-      v.x = 0;
-      v.y = -targetSpeed;
+    if (avoid.failStreak >= TRAP_STREAK) {
+      // Все ходы закрыты устойчиво — всплываем и берём бюджет полёта
       avoid.sweep = ESCAPE_SWEEP;
       avoid.hover = 0;
+      if (!climbStep(field, p, r, targetSpeed)) {
+        v.x = 0;
+        v.y = 0;
+        return;
+      }
+      v.x = 0;
+      v.y = -targetSpeed;
       return;
     }
     v.x = 0;

@@ -262,7 +262,8 @@ ctx.onmessage = (e: { data: unknown }) => {
         cols: msg.cols,
         rows: msg.rows,
         cellSize: msg.cellSize,
-        blocked: new Uint8Array(msg.blocked)
+        blocked: new Uint8Array(msg.blocked),
+        widthPx: msg.widthPx
       };
       break;
     }

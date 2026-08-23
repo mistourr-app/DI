@@ -97,7 +97,8 @@ export class FluidSimulationController {
         cols: field.cols,
         rows: field.rows,
         cellSize: field.cellSize,
-        blocked: blockedCopy.buffer
+        blocked: blockedCopy.buffer,
+        widthPx: field.widthPx
       },
       [blockedCopy.buffer]
     );

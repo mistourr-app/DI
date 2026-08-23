@@ -89,7 +89,14 @@ export interface Level {
    */
   isBlocked(x: number, y: number): boolean;
   /** Сетка коллизий для fluid worker (копия ссылки; сетка иммутабельна после генерации) */
-  getCollisionField(): { cols: number; rows: number; cellSize: number; blocked: Uint8Array };
+  getCollisionField(): {
+    cols: number;
+    rows: number;
+    cellSize: number;
+    blocked: Uint8Array;
+    /** Реальная ширина поля в px — для границ движения (cols*cell может быть больше) */
+    widthPx: number;
+  };
 }
 
 // ============================================================
@@ -101,6 +108,8 @@ const SMOOTH_ITER = 2;
 // Нижняя часть поля свободна от препятствий: рукава из лабиринта
 // свободно выливаются к зоне базы (~1/10 высоты поля)
 const BOTTOM_FREE_RATIO = 0.1;
+// Доля площади поля, которую может занимать один связный кластер препятствий
+const MAX_CLUSTER_RATIO = 0.12;
 
 export class LevelGenerator {
   generate(params: LevelParams): Level {
@@ -146,6 +155,19 @@ export class LevelGenerator {
       }
     }
 
+    // --- 2.5 Ширина проходов и размер кластеров ---
+    // Эрозия свободного места ядром 3x3: выживают только клетки со всеми
+    // свободными соседями -> любой проход >= 3 клеток (48px при CELL=16)
+    this.sealThinPassages(grid, cols, rows);
+    // Крупные связанные кластеры режем крестом коридоров через их центр
+    this.splitOversizedClusters(
+      grid,
+      cols,
+      rows,
+      Math.max(passageWidth / 2, CELL * 1.25),
+      MAX_CLUSTER_RATIO
+    );
+
     // --- 3. Гарантия 100% проходимости от входа к выходу ---
     this.ensurePassability(grid, cols, rows, width, height, bottomMargin, passageWidth);
 
@@ -182,12 +204,19 @@ export class LevelGenerator {
         }
         return grid[cy * cols + cx] === 1;
       },
-      getCollisionField: (): { cols: number; rows: number; cellSize: number; blocked: Uint8Array } => ({
+      getCollisionField: (): {
+        cols: number;
+        rows: number;
+        cellSize: number;
+        blocked: Uint8Array;
+        widthPx: number;
+      } => ({
         cols,
         rows,
         cellSize: CELL,
         // Сетка иммутабельна после генерации — отдаём ссылку без копии
-        blocked: grid
+        blocked: grid,
+        widthPx: width
       })
     };
   }
@@ -304,6 +333,99 @@ export class LevelGenerator {
       if (reachable) {
         break;
       }
+    }
+  }
+
+  /**
+   * Герметизация узких проходов (эрозия свободного места ядром 3x3):
+   * свободная клетка выживает только если ВСЕ 8 соседей свободны.
+   * Итог — любой проход между препятствиями не уже 3 клеток (48px).
+   * Клетки вне сетки считаются свободными — кромки поля не запечатываются.
+   */
+  private sealThinPassages(grid: Uint8Array, cols: number, rows: number): void {
+    const sealed = new Uint8Array(grid.length);
+    for (let cy = 0; cy < rows; cy++) {
+      for (let cx = 0; cx < cols; cx++) {
+        const i = cy * cols + cx;
+        if (grid[i] === 1) {
+          sealed[i] = 1;
+          continue;
+        }
+        let tight = false;
+        for (let dy = -1; dy <= 1 && !tight; dy++) {
+          for (let dx = -1; dx <= 1 && !tight; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+            if (grid[ny * cols + nx] === 1) tight = true;
+          }
+        }
+        sealed[i] = tight ? 1 : 0;
+      }
+    }
+    grid.set(sealed);
+  }
+
+  /**
+   * Лимит размера кластеров: если связный блоб занимает больше maxRatio
+   * площади поля — разрезаем крестом коридоров через центр его bbox и
+   * пересчитываем компоненты. Максимум 8 итераций.
+   */
+  private splitOversizedClusters(
+    grid: Uint8Array,
+    cols: number,
+    rows: number,
+    brush: number,
+    maxRatio: number
+  ): void {
+    const maxCells = Math.floor(cols * rows * maxRatio);
+    const label = new Int32Array(grid.length);
+    const stack: number[] = [];
+
+    for (let iter = 0; iter < 8; iter++) {
+      label.fill(0);
+      let worstSize = 0;
+      let worstBox: [number, number, number, number] | null = null;
+
+      for (let start = 0; start < grid.length; start++) {
+        if (grid[start] !== 1 || label[start] !== 0) continue;
+
+        // BFS компонента (4-связность)
+        stack.length = 0;
+        stack.push(start);
+        label[start] = 1;
+        let size = 0;
+        let minX = cols, maxX = -1, minY = rows, maxY = -1;
+        while (stack.length > 0) {
+          const j = stack.pop()!;
+          size++;
+          const jx = j % cols;
+          const jy = (j / cols) | 0;
+          if (jx < minX) minX = jx;
+          if (jx > maxX) maxX = jx;
+          if (jy < minY) minY = jy;
+          if (jy > maxY) maxY = jy;
+
+          if (jx > 0 && grid[j - 1] === 1 && label[j - 1] === 0) { label[j - 1] = 1; stack.push(j - 1); }
+          if (jx < cols - 1 && grid[j + 1] === 1 && label[j + 1] === 0) { label[j + 1] = 1; stack.push(j + 1); }
+          if (jy > 0 && grid[j - cols] === 1 && label[j - cols] === 0) { label[j - cols] = 1; stack.push(j - cols); }
+          if (jy < rows - 1 && grid[j + cols] === 1 && label[j + cols] === 0) { label[j + cols] = 1; stack.push(j + cols); }
+        }
+
+        if (size > worstSize) {
+          worstSize = size;
+          worstBox = [minX, minY, maxX, maxY];
+        }
+      }
+
+      if (worstSize <= maxCells || !worstBox) return;
+
+      const [minX, minY, maxX, maxY] = worstBox;
+      const cxp = ((minX + maxX) / 2 + 0.5) * CELL;
+      const cyp = ((minY + maxY) / 2 + 0.5) * CELL;
+      this.carveCorridor(grid, cols, rows, cxp, 0, cxp, rows * CELL, brush);
+      this.carveCorridor(grid, cols, rows, 0, cyp, cols * CELL, cyp, brush);
     }
   }
 
