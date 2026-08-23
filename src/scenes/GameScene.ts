@@ -33,7 +33,7 @@ export class GameScene extends Phaser.Scene {
   private currentLevel: number = 1;          // Текущий уровень (1..MAX_LEVEL)
   private totalEnemiesToSpawn: number = 100; // Монстров на уровне = level * 100
   private enemiesSpawned: number = 0;        // Сколько уже заспавнено
-  private maxEnemiesOnScreen: number = 1000;   // Максимум на экране
+  private maxEnemiesOnScreen: number = 10000;  // Максимум на экране
   private enemyCount: number = 0;           // Текущее количество на экране
   private victoryShown: boolean = false;     // Экран победы показан
   private gameOverShown: boolean = false;    // Экран поражения показан
@@ -45,10 +45,10 @@ export class GameScene extends Phaser.Scene {
   
   // Таймеры
   private spawnTimer: number = 0;           // Таймер для спавна
-  private spawnInterval: number = 30;       // Интервал спавна (мс)
+  private spawnInterval: number = 5;        // Интервал спавна (мс)
   
   // Настройки монстров
-  private enemySpeed: number = 0.5;        // Базовая скорость монстров
+  private enemySpeed: number = 0.75;       // Базовая скорость монстров
   private enemySize: number = 5;           // Размер монстров
 
   // Уровень (генерация по seed)
@@ -58,8 +58,8 @@ export class GameScene extends Phaser.Scene {
   private levelSeed: string = 'seed-' + Math.floor(Math.random() * 1e9).toString(36);
   private spawnGateIdx: number = 0; // раунд-робин по входам
   // Параметры генерации (крутятся в дебаг поп-апе)
-  private genDensity: number = 1.1;
-  private genBlobScale: number = 0.3;
+  private genDensity: number = 0.3;
+  private genBlobScale: number = 1;
 
   // Fluid simulation: физика толпы в воркере (fallback — main-thread путь)
   private fluidCtrl!: FluidSimulationController;
@@ -1066,8 +1066,8 @@ export class GameScene extends Phaser.Scene {
       this.syncFluidParams();
     });
     makeReset(px + padPx(22), btnHw, 'Сброс генерации', () => {
-      this.genDensity = 1.1;
-      this.genBlobScale = 0.3;
+      this.genDensity = 0.3;
+      this.genBlobScale = 1;
       this.updatePopupValues();
       this.generateLevel();
     });

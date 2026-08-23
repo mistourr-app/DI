@@ -2,11 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches:
-      - main
-      # ВРЕМЕННО: превью фичи супер силы бога на Pages.
-      # Убрать после вливания phase2/god-power в main
-      - phase2/god-power
+    branches: [main]
   workflow_dispatch:
 
 permissions:
