@@ -146,8 +146,8 @@ export class LevelGenerator {
         // Свободная зона только внизу: верх и бока без отступа, блобы
         // могут начинаться прямо от кромки поля
         if (wy > height - bottomMargin) continue;
-        const n1 = noise.noise2D(wx * 0.006, wy * 0.006);
-        const n2 = noise.noise2D(wx * 0.02 + 512.7, wy * 0.02 + 217.3);
+        const n1 = noise.noise2D(wx * 0.0045, wy * 0.0045);
+        const n2 = noise.noise2D(wx * 0.015 + 512.7, wy * 0.015 + 217.3);
         const u = (n1 * 0.72 + n2 * 0.28 + 1) / 2;
         if (u > threshold) {
           grid[cy * cols + cx] = 1;
@@ -155,11 +155,13 @@ export class LevelGenerator {
       }
     }
 
-    // --- 2.5 Ширина проходов и размер кластеров ---
-    // Эрозия свободного места ядром 3x3: выживают только клетки со всеми
-    // свободными соседями -> любой проход >= 3 клеток (48px при CELL=16)
-    this.sealThinPassages(grid, cols, rows);
-    // Крупные связанные кластеры режем крестом коридоров через их центр
+    // --- 2.5 Форма и размер структур ---
+    // Открытие препятствий: тонкие гребни исчезают, крупные силуэты
+    // и плавные изгибы остаются — проходы расширяются естественно
+    this.openObstacles(grid, cols, rows);
+    // Прямые щели-трещины между толстыми структурами закрываются
+    this.sealPinchedGaps(grid, cols, rows);
+    // Кластеры больше лимита режутся извилистым каньоном (не прямой!)
     this.splitOversizedClusters(
       grid,
       cols,
@@ -337,40 +339,151 @@ export class LevelGenerator {
   }
 
   /**
-   * Герметизация узких проходов (эрозия свободного места ядром 3x3):
-   * свободная клетка выживает только если ВСЕ 8 соседей свободны.
-   * Итог — любой проход между препятствиями не уже 3 клеток (48px).
-   * Клетки вне сетки считаются свободными — кромки поля не запечатываются.
+   * Морфологическое открытие препятствий (эрозия + дилатация, ядро 3x3):
+   * исчезают гребни и шипы тоньше 3 клеток, крупные формы сохраняют
+   * силуэт. В отличие от эрозии свободного места НЕ спрямляет проходы.
+   * Клетки вне сетки считаются опорой — блобы у кромок не разрушаются.
    */
-  private sealThinPassages(grid: Uint8Array, cols: number, rows: number): void {
-    const sealed = new Uint8Array(grid.length);
+  private openObstacles(grid: Uint8Array, cols: number, rows: number): void {
+    const eroded = new Uint8Array(grid.length);
     for (let cy = 0; cy < rows; cy++) {
       for (let cx = 0; cx < cols; cx++) {
         const i = cy * cols + cx;
-        if (grid[i] === 1) {
-          sealed[i] = 1;
-          continue;
-        }
-        let tight = false;
-        for (let dy = -1; dy <= 1 && !tight; dy++) {
-          for (let dx = -1; dx <= 1 && !tight; dx++) {
+        if (grid[i] === 0) continue;
+        let survives = true;
+        for (let dy = -1; dy <= 1 && survives; dy++) {
+          for (let dx = -1; dx <= 1 && survives; dx++) {
             if (dx === 0 && dy === 0) continue;
             const nx = cx + dx;
             const ny = cy + dy;
             if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
-            if (grid[ny * cols + nx] === 1) tight = true;
+            if (grid[ny * cols + nx] === 0) survives = false;
           }
         }
-        sealed[i] = tight ? 1 : 0;
+        if (survives) eroded[i] = 1;
       }
     }
-    grid.set(sealed);
+
+    // Дилтация: контур возвращается, кроме мест удалённых тонких деталей
+    const opened = new Uint8Array(grid.length);
+    for (let cy = 0; cy < rows; cy++) {
+      for (let cx = 0; cx < cols; cx++) {
+        const i = cy * cols + cx;
+        if (eroded[i] === 1) {
+          opened[i] = 1;
+          continue;
+        }
+        let touch = false;
+        for (let dy = -1; dy <= 1 && !touch; dy++) {
+          for (let dx = -1; dx <= 1 && !touch; dx++) {
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+            if (eroded[ny * cols + nx] === 1) touch = true;
+          }
+        }
+        opened[i] = touch ? 1 : 0;
+      }
+    }
+    grid.set(opened);
+  }
+
+  /**
+   * Закрытие прямых трещин: свободная клетка, зажатая между препятствиями
+   * по горизонтали или вертикали, заполняется. Диагональные «лестницы» и
+   * широкие проходы не трогаются — органика форм сохраняется.
+   */
+  private sealPinchedGaps(grid: Uint8Array, cols: number, rows: number): void {
+    for (let iter = 0; iter < 2; iter++) {
+      for (let cy = 0; cy < rows; cy++) {
+        for (let cx = 0; cx < cols; cx++) {
+          const i = cy * cols + cx;
+          if (grid[i] === 1) continue;
+          const L = cx > 0 && grid[i - 1] === 1;
+          const R = cx < cols - 1 && grid[i + 1] === 1;
+          const U = cy > 0 && grid[i - cols] === 1;
+          const D = cy < rows - 1 && grid[i + cols] === 1;
+          if ((L && R) || (U && D)) grid[i] = 1;
+        }
+      }
+    }
+  }
+
+  /** Очищает диск радиуса r в клетках сетки */
+  private carveDisc(
+    grid: Uint8Array,
+    cols: number,
+    rows: number,
+    px: number,
+    py: number,
+    r: number
+  ): void {
+    const rSq = r * r;
+    const cx0 = Math.max(0, Math.floor((px - r) / CELL));
+    const cx1 = Math.min(cols - 1, Math.floor((px + r) / CELL));
+    const cy0 = Math.max(0, Math.floor((py - r) / CELL));
+    const cy1 = Math.min(rows - 1, Math.floor((py + r) / CELL));
+    for (let cy = cy0; cy <= cy1; cy++) {
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const wx = cx * CELL + CELL / 2;
+        const wy = cy * CELL + CELL / 2;
+        const ddx = wx - px;
+        const ddy = wy - py;
+        if (ddx * ddx + ddy * ddy <= rSq) {
+          grid[cy * cols + cx] = 0;
+        }
+      }
+    }
+  }
+
+  /** Извилистый вертикальный каньон (~1.5 синус-волны, детерминированный) */
+  private carveWindingV(
+    grid: Uint8Array,
+    cols: number,
+    rows: number,
+    r: number,
+    xCenter: number,
+    yFrom: number,
+    yTo: number,
+    amplitude: number
+  ): void {
+    const span = Math.max(CELL, yTo - yFrom);
+    const freq = (Math.PI * 3) / span;
+    const phase = ((Math.round(xCenter / CELL) * 31) % 10) * (Math.PI / 5);
+    const steps = Math.ceil(span / (CELL * 0.5));
+    for (let s = 0; s <= steps; s++) {
+      const y = yFrom + ((yTo - yFrom) * s) / steps;
+      const x = xCenter + Math.sin(y * freq + phase) * amplitude;
+      this.carveDisc(grid, cols, rows, x, y, r);
+    }
+  }
+
+  /** Извилистый горизонтальный каньон */
+  private carveWindingH(
+    grid: Uint8Array,
+    cols: number,
+    rows: number,
+    r: number,
+    yCenter: number,
+    xFrom: number,
+    xTo: number,
+    amplitude: number
+  ): void {
+    const span = Math.max(CELL, xTo - xFrom);
+    const freq = (Math.PI * 3) / span;
+    const phase = ((Math.round(yCenter / CELL) * 17) % 10) * (Math.PI / 5);
+    const steps = Math.ceil(span / (CELL * 0.5));
+    for (let s = 0; s <= steps; s++) {
+      const x = xFrom + ((xTo - xFrom) * s) / steps;
+      const y = yCenter + Math.sin(x * freq + phase) * amplitude;
+      this.carveDisc(grid, cols, rows, x, y, r);
+    }
   }
 
   /**
    * Лимит размера кластеров: если связный блоб занимает больше maxRatio
-   * площади поля — разрезаем крестом коридоров через центр его bbox и
-   * пересчитываем компоненты. Максимум 8 итераций.
+   * площади поля — разрезаем извилистым каньоном через его центр
+   * (вертикаль/горизонталь чередуются по итерациям), до 8 раз.
    */
   private splitOversizedClusters(
     grid: Uint8Array,
@@ -422,10 +535,25 @@ export class LevelGenerator {
       if (worstSize <= maxCells || !worstBox) return;
 
       const [minX, minY, maxX, maxY] = worstBox;
-      const cxp = ((minX + maxX) / 2 + 0.5) * CELL;
-      const cyp = ((minY + maxY) / 2 + 0.5) * CELL;
-      this.carveCorridor(grid, cols, rows, cxp, 0, cxp, rows * CELL, brush);
-      this.carveCorridor(grid, cols, rows, 0, cyp, cols * CELL, cyp, brush);
+      const amp = Math.min((iter % 2 === 0 ? maxX - minX : maxY - minY) * CELL * 0.35, 64);
+      if (iter % 2 === 0) {
+        // Вертикальный извилистый каньон через блоб (только его bbox!)
+        this.carveWindingV(
+          grid, cols, rows, brush,
+          ((minX + maxX) / 2 + 0.5) * CELL,
+          minY * CELL - brush,
+          (maxY + 1) * CELL + brush,
+          amp
+        );
+      } else {
+        this.carveWindingH(
+          grid, cols, rows, brush,
+          ((minY + maxY) / 2 + 0.5) * CELL,
+          minX * CELL - brush,
+          (maxX + 1) * CELL + brush,
+          amp
+        );
+      }
     }
   }
 

@@ -374,6 +374,12 @@ function rand(amt: number): number {
 const ESCAPE_SWEEP = 1000;
 /** Подшагов свободной вертикали подряд, прежде чем сваливаться в просвет */
 const HOVER_STEPS = 4;
+/**
+ * Требуемый просвет ПОД точкой приземления при выходе из полёта, px.
+ * Без этой проверки агент, едва сместившись от стены, приземляется
+ * обратно на неё — и цикл «всплытие-падение» повторяется у края.
+ */
+const HOVER_DEPTH_CLEAR = 10;
 /** Подряд закрыты все ходы, прежде чем включать всплытие (защита от ложных срабатываний) */
 const TRAP_STREAK = 6;
 /**
@@ -472,7 +478,10 @@ export function moveDownStep(
       // Уровень впереди свободен: копим подтверждение глубины под собой
       avoid.hover++;
       avoid.sweep--;
-      if (avoid.hover >= HOVER_STEPS) {
+      const deepEnough =
+        avoid.hover >= HOVER_STEPS &&
+        !isBoxBlocked(field, nx, ny + HOVER_DEPTH_CLEAR, r);
+      if (deepEnough) {
         // Просвет настоящий — сваливаемся и возвращаемся к обычному режиму
         p.x = clampX(nx, fieldW);
         p.y = ny;
@@ -559,7 +568,10 @@ export function moveDownStep(
     avoid.value = -avoid.value;
     avoid.failStreak++;
     if (avoid.failStreak >= TRAP_STREAK) {
-      // Все ходы закрыты устойчиво — всплываем и берём бюджет полёта
+      // Все ходы закрыты устойчиво — всплываем и берём бюджет полёта.
+      // Направление полёта — ОТ ближайшего бокового края, к центру:
+      // иначе агент долго карабкается вдоль стены у кромки
+      avoid.value = p.x > fieldW * 0.5 ? -1 : 1;
       avoid.sweep = ESCAPE_SWEEP;
       avoid.hover = 0;
       if (!climbStep(field, p, r, targetSpeed)) {
