@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { LevelGenerator } from '../game/generation/LevelGenerator';
 import { FluidSimulationController, type FrameInfo } from '../game/fluid/FluidSimulationController';
-import { OUT_STRIDE, type FluidParams } from '../game/fluid/fluidProtocol';
+import { MAX_AGENTS, OUT_STRIDE, type FluidParams } from '../game/fluid/fluidProtocol';
 import { GameConfig } from '../game/config/GameConfig';
 import { UI_SCALE, fontPx, padPx } from '../game/config/uiScale';
 
@@ -918,17 +918,18 @@ export class GameScene extends Phaser.Scene {
       () => `${this.spawnInterval}`
     );
 
-    // Общее число монстров за уровень
+    // Общее число монстров за уровень (шаг растёт с величиной — до 100k без ста кликов)
+    const totalStep = this.totalEnemiesToSpawn >= 10000 ? 1000 : 100;
     addRow('Всего монстров, тыс.',
-      () => { this.totalEnemiesToSpawn = Math.max(100, this.totalEnemiesToSpawn - 100); },
-      () => { this.totalEnemiesToSpawn += 100; },
+      () => { this.totalEnemiesToSpawn = Math.max(100, this.totalEnemiesToSpawn - totalStep); },
+      () => { this.totalEnemiesToSpawn += totalStep; },
       () => `${Math.floor(this.totalEnemiesToSpawn / 1000)}K`
     );
 
-    // Одновременный лимит живых монстров
+    // Одновременный лимит живых монстров (потолок = ёмкость физики)
     addRow('Максимум на экране',
       () => { this.maxEnemiesOnScreen = Math.max(10, this.maxEnemiesOnScreen - 10); },
-      () => { this.maxEnemiesOnScreen = Math.min(1000, this.maxEnemiesOnScreen + 10); },
+      () => { this.maxEnemiesOnScreen = Math.min(MAX_AGENTS, this.maxEnemiesOnScreen + 10); },
       () => `${this.maxEnemiesOnScreen}`
     );
 

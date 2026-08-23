@@ -152,9 +152,10 @@ function respawnToSpawn(slot: number): void {
  *  Pass B — силы жидкости (separation/pressure/viscosity/cohesion):
  *           пересборка spatial hash, смещение от соседей с осевым
  *           скольжением при коллизии.
- * Возвращает число достигших базы (их id попадают в arrivedScratch).
+ * Прибывшие пишутся в arrivedScratch начиная с arrivedBase (накопление
+ * за все подшаги кадра). Возвращает число прибывших на этом подшаге.
  */
-function integrate(): number {
+function integrate(arrivedBase: number): number {
   if (!field || !grid) return 0;
 
   const targetSpeed = params.targetSpeed;
@@ -211,7 +212,8 @@ function integrate(): number {
 
     // Достижение нижней границы поля => база
     if (py[s] >= worldH) {
-      arrivedScratch[arrivedN++] = idOfSlot[s];
+      arrivedScratch[arrivedBase + arrivedN] = idOfSlot[s];
+      arrivedN++;
       killSlot(s);
     }
   }
@@ -329,11 +331,14 @@ ctx.onmessage = (e: { data: unknown }) => {
       // снимет HP базы
       arrivedCount = 0;
 
-      // Фиксированные подшаги c аккумулятором
+      // Фиксированные подшаги c аккумулятором.
+      // ВАЖНО: накапливаем прибывших за ВСЕ подшаги кадра. Перезапись
+      // arrivedCount = integrate() теряла прибытия первого подшага при
+      // 2+ подшагах (30fps мобильные): спрайты зависали у базы навсегда
       accumulator += msg.dt;
       let sub = 0;
       while (accumulator >= SUBSTEP_DT && sub < MAX_SUBSTEPS) {
-        arrivedCount = integrate();
+        arrivedCount += integrate(arrivedCount);
         accumulator -= SUBSTEP_DT;
         sub++;
       }

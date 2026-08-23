@@ -39,7 +39,9 @@ export class FluidSimulationController {
   private bufferPool: BufferTriple[] = [];
   private inFlight = false;
   private ready = false;
-  private nextId = 0;
+  /** Выданные id без возврата; после прибытия/удаления id переиспользуется */
+  private freeIds: number[] = [];
+  private idsIssued = 0;
 
   /** Вызывается на каждый кадр симуляции (после 'frame' от воркера) */
   onFrame: ((info: FrameInfo) => void) | null = null;
@@ -104,11 +106,21 @@ export class FluidSimulationController {
     );
   }
 
-  /** Регистрирует агента. Возвращает id (или -1, если лимит исчерпан / fallback). */
+  /**
+   * Регистрирует агента. Возвращает id (или -1, если лимит исчерпан /
+   * fallback). Id переиспользуются: без этого после MAX_AGENTS суммарных
+   * спавнов новые монстры переставали регистрироваться в физике.
+   */
   addAgent(x: number, y: number, vx: number, vy: number, radius: number): number {
     if (!this.isWorkerMode) return -1;
-    if (this.nextId >= MAX_AGENTS) return -1;
-    const id = this.nextId++;
+    let id: number;
+    if (this.freeIds.length > 0) {
+      id = this.freeIds.pop()!;
+    } else if (this.idsIssued < MAX_AGENTS) {
+      id = this.idsIssued++;
+    } else {
+      return -1;
+    }
     this.post({ type: 'add', id, x, y, vx, vy, radius });
     return id;
   }
@@ -116,6 +128,7 @@ export class FluidSimulationController {
   removeAgent(id: number): void {
     if (!this.isWorkerMode || id < 0) return;
     this.post({ type: 'remove', id });
+    this.freeIds.push(id);
   }
 
   setParams(params: FluidParams): void {
@@ -148,6 +161,8 @@ export class FluidSimulationController {
     }
     this.isWorkerMode = false;
     this.ready = false;
+    this.freeIds = [];
+    this.idsIssued = 0;
   }
 
   private post(msg: unknown, transfer?: Transferable[]): void {
@@ -176,6 +191,10 @@ export class FluidSimulationController {
 
         if (this.onFrame) {
           this.onFrame(info);
+        }
+        // Id прибывших возвращаются в пул для новых агентов
+        for (let a = 0; a < info.arrivedCount; a++) {
+          this.freeIds.push(info.arrived[a]);
         }
         break;
       }
