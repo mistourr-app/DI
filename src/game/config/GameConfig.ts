@@ -38,6 +38,14 @@ export const GameConfig = {
     }
   },
   
+  // Супер сила бога (ГДД 2.5): радиусы в css-px дизайна (умножаются на UI_SCALE)
+  godPower: {
+    lightningKillCount: 12,   // Монстров уничтожает одна молния
+    lightningRadius: 60,      // Радиус поражения молнии
+    superRadius: 160,         // Радиус зоны супер атаки
+    superChargeRequired: 40   // Убийств молнией для полной зарядки бара
+  },
+
   // Настройки стихий
   elements: {
     fire: {

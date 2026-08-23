@@ -4,6 +4,8 @@ import { FluidSimulationController, type FrameInfo } from '../game/fluid/FluidSi
 import { MAX_AGENTS, OUT_STRIDE, type FluidParams } from '../game/fluid/fluidProtocol';
 import { GameConfig } from '../game/config/GameConfig';
 import { UI_SCALE, fontPx, padPx } from '../game/config/uiScale';
+import { GodPowerSystem } from '../game/god/GodPowerSystem';
+import { GodPowerIcon } from '../game/god/GodPowerIcon';
 
 // Радиус круга в текстуре 'enemy' (SVG 20x20, circle r=8) — для масштабирования
 const ENEMY_TEX_RADIUS = 8;
@@ -63,6 +65,10 @@ export class GameScene extends Phaser.Scene {
   /** Текущий кегль дебаг-панели (чтобы не дёргать setStyle без изменений) */
   private debugFontSize: number = 0;
 
+  // Супер сила бога: заряд от молний + иконка в зоне базы (ГДД 2.5)
+  private godPower = new GodPowerSystem(GameConfig.godPower);
+  private godIcon: GodPowerIcon | null = null;
+
   // Константы
   private static readonly BATTLEFIELD_RATIO = 5 / 6;
   private static readonly BASE_RATIO = 1 / 6;
@@ -120,6 +126,11 @@ export class GameScene extends Phaser.Scene {
     
     // Настраиваем камеру
     this.setupCamera();
+
+    // Дебаг-хук для смоук-тестов (только в debug-сборке)
+    if (GameConfig.game.debug) {
+      (window as any).__di = this;
+    }
     
     // Добавляем обработчик изменения размера окна
     this.scale.on('resize', this.handleResize, this);
@@ -133,6 +144,7 @@ export class GameScene extends Phaser.Scene {
         this.fluidCtrl.destroy();
       }
       this.spriteById.clear();
+      this.godIcon = null;
     });
   }
 
@@ -297,27 +309,11 @@ export class GameScene extends Phaser.Scene {
     const baseX = this.baseZone.x + this.baseZone.width / 2;
     const baseY = this.baseZone.y + this.baseZone.height / 2;
 
-    // Адаптивный размер базы
-    const baseSize = Math.min(this.baseZone.width, this.baseZone.height) * 0.2;
-    const fontSize = Math.max(16 * UI_SCALE, baseSize * 0.4);
-
-    this.base = this.add.rectangle(
-      baseX,
-      baseY,
-      baseSize,
-      baseSize,
-      0x00ffff
-    );
-    this.base.setStrokeStyle(3 * UI_SCALE, 0xffffff);
-
-    // Текст "БАЗА"
-    const baseText = this.add.text(baseX, baseY, 'БАЗА', {
-      font: `${fontSize}px Arial`,
-      color: '#ffffff',
-      stroke: '#000000',
-      strokeThickness: 3 * UI_SCALE
-    });
-    baseText.setOrigin(0.5);
+    // Логическая точка базы (цель монстров, координаты физики).
+    // Визуал «БАЗА» убран: центральный слот занят иконкой супер силы
+    // бога с прогресс-баром (ГДД 2.4)
+    this.base = this.add.rectangle(baseX, baseY, 1, 1, 0x00ffff, 0);
+    this.base.setVisible(false);
   }
   
   private createElements(): void {
@@ -342,7 +338,19 @@ export class GameScene extends Phaser.Scene {
     // Адаптивный размер шрифта
     const fontSize = Math.max(14 * UI_SCALE, baseElementSize * 0.5);
     const labelFontSize = Math.max(10 * UI_SCALE, baseElementSize * 0.3);
-    
+
+    // Центральный слот ряда — иконка супер силы бога с прогресс-баром
+    // (ГДД 2.4: иконка базы заменена на супер силу бога)
+    this.godIcon?.destroy();
+    this.godIcon = new GodPowerIcon(
+      this,
+      centerX,
+      centerY,
+      baseElementSize * 0.62,
+      this.godPower,
+      () => { this.toggleSuperMode(); }
+    );
+
     elements.forEach(element => {
       const elementX = centerX + (element.offset * elementSpacing);
       const elementY = centerY;
@@ -709,7 +717,7 @@ export class GameScene extends Phaser.Scene {
       this.cameras.main.centerY,
       'GAME OVER!',
       {
-        font: '${48 * UI_SCALE}px Arial',
+        font: `${48 * UI_SCALE}px Arial`,
         color: '#ff0000',
         stroke: '#000000',
         strokeThickness: 4 * UI_SCALE
@@ -823,8 +831,8 @@ export class GameScene extends Phaser.Scene {
     const rowHeight = fontPx(34);
     const genBtnH = fontPx(48);
     const padBottom = padPx(16);
-    // 5 параметров спавна + 2 генерации + 4 силы + строка сбросов
-    const panelHeight = headerH + 12 * rowHeight + genBtnH + padBottom;
+    // 5 параметров спавна + 2 генерации + 4 силы + 3 силы бога + строка сбросов
+    const panelHeight = headerH + 15 * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(padPx(20), screenHeight * 0.06));
 
@@ -991,6 +999,35 @@ export class GameScene extends Phaser.Scene {
       () => F.cohesion.toFixed(2)
     );
 
+    // --- Супер сила бога: балансные параметры (ГДД 2.5) ---
+    const G = GameConfig.godPower;
+
+    addRow('Убийств за молнию',
+      () => { G.lightningKillCount = Math.max(1, G.lightningKillCount - 1); },
+      () => { G.lightningKillCount = Math.min(100, G.lightningKillCount + 1); },
+      () => `${G.lightningKillCount}`
+    );
+
+    addRow('Радиус супер атаки',
+      () => { G.superRadius = Math.max(40, G.superRadius - 10); },
+      () => { G.superRadius = Math.min(400, G.superRadius + 10); },
+      () => `${G.superRadius}`
+    );
+
+    addRow('Заряд для супер',
+      () => {
+        G.superChargeRequired = Math.max(5, G.superChargeRequired - 5);
+        this.godPower.onBalanceChanged();
+        this.godIcon?.redraw();
+      },
+      () => {
+        G.superChargeRequired = Math.min(500, G.superChargeRequired + 5);
+        this.godPower.onBalanceChanged();
+        this.godIcon?.redraw();
+      },
+      () => `${G.superChargeRequired}`
+    );
+
     // Кнопки сброса (в одну строку): силы и параметры генерации
     const rstY = y + padPx(4);
     const btnHw = (panelWidth - 28 - 8) / 2;
@@ -1066,41 +1103,119 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupInput(): void {
-    // Тап в поле боя - добавляет врагов
+    // Тап по полю боя: обычная молния либо (в режиме супер силы) супер атака.
+    // Тапы по поп-апу настроек поле боя не затрагивают
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      // Проверяем, что тап в поле боя
-      if (this.battlefieldZone.contains(pointer.x, pointer.y)) {
-        for (let i = 0; i < 3; i++) {
-          this.createEnemy();
-        }
-        
-        // Визуальный feedback
-        this.createTapEffect(pointer.x, pointer.y);
+      if (this.settingsOpen) return;
+      if (!this.battlefieldZone.contains(pointer.x, pointer.y)) return;
+
+      if (this.godPower.isArmed) {
+        this.castSuperAttack(pointer.x, pointer.y);
+      } else {
+        this.castLightning(pointer.x, pointer.y);
       }
     });
   }
-  
-  private createTapEffect(x: number, y: number): void {
-    const circle1 = this.add.circle(x, y, 10 * UI_SCALE, 0x00ffff, 0.5);
-    const circle2 = this.add.circle(x, y, 5 * UI_SCALE, 0xffffff, 0.7);
-    
+
+  /** Тап по иконке: включить/отменить режим супер силы (ГДД 2.5) */
+  private toggleSuperMode(): void {
+    if (this.godPower.isArmed) {
+      this.godPower.disarm();
+    } else {
+      this.godPower.arm();
+    }
+    this.godIcon?.redraw();
+  }
+
+  /** Обычная атака бога: AOE-молния, убивает до lightningKillCount монстров */
+  private castLightning(x: number, y: number): void {
+    const gp = this.godPower;
+    const radiusPx = gp.lightningRadius * UI_SCALE;
+    const targets = this.captureTargets(x, y, radiusPx, gp.lightningKillCount);
+    for (let i = 0; i < targets.length; i++) {
+      this.killEnemy(targets[i]);
+    }
+    if (targets.length > 0) {
+      gp.registerKills(targets.length);
+    }
+    this.godIcon?.redraw();
+    this.createWhiteFlash(x, y, radiusPx, false);
+  }
+
+  /** Супер атака: все монстры в радиусе superRadius погибают, бар сбрасывается */
+  private castSuperAttack(x: number, y: number): void {
+    const radiusCss = this.godPower.consume();
+    if (radiusCss === null) return;
+    const radiusPx = radiusCss * UI_SCALE;
+    const targets = this.captureTargets(x, y, radiusPx, Infinity);
+    for (let i = 0; i < targets.length; i++) {
+      this.killEnemy(targets[i]);
+    }
+    this.godIcon?.redraw();
+    this.createWhiteFlash(x, y, radiusPx, true);
+  }
+
+  /**
+   * Живые монстры вокруг точки, отсортированные по удалению,
+   * не более limit штук (limit=Infinity — без ограничения).
+   */
+  private captureTargets(x: number, y: number, radiusPx: number, limit: number): any[] {
+    const r2 = radiusPx * radiusPx;
+    const hits: Array<{ e: any; d2: number }> = [];
+    const children = this.enemies.getChildren() as any[];
+    for (let i = 0; i < children.length; i++) {
+      const e = children[i];
+      if (!e.active) continue;
+      const dx = e.x - x;
+      const dy = e.y - y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= r2) {
+        hits.push({ e, d2 });
+      }
+    }
+    hits.sort((a, b) => a.d2 - b.d2);
+    const n = Math.min(hits.length, limit);
+    const out: any[] = new Array(n);
+    for (let i = 0; i < n; i++) {
+      out[i] = hits[i].e;
+    }
+    return out;
+  }
+
+  /** Уничтожение монстра: снятие с физики + возврат спрайта в пул */
+  private killEnemy(enemy: any): void {
+    const aid: number = enemy.aid ?? -1;
+    if (aid >= 0 && this.fluidCtrl?.isWorkerMode) {
+      this.fluidCtrl.removeAgent(aid);
+      this.spriteById.delete(aid);
+    }
+    this.enemies.killAndHide(enemy);
+    this.enemyCount--;
+  }
+
+  /** Белая вспышка бога: ядро + расширяющееся кольцо зоны поражения */
+  private createWhiteFlash(x: number, y: number, radiusPx: number, isSuper: boolean): void {
+    const coreR = radiusPx * (isSuper ? 0.45 : 0.35);
+    const core = this.add.circle(x, y, coreR, 0xffffff, 0.95).setDepth(900);
+    const ring = this.add.circle(x, y, coreR, 0xffffff, 0)
+      .setStrokeStyle(isSuper ? 6 * UI_SCALE : 3 * UI_SCALE, 0xffffff, 0.9)
+      .setDepth(900);
+
     this.tweens.add({
-      targets: circle1,
-      radius: 40 * UI_SCALE,
+      targets: core,
+      radius: radiusPx,
       alpha: 0,
-      duration: 400,
-      ease: 'Power2',
-      onComplete: () => circle1.destroy()
+      duration: isSuper ? 320 : 240,
+      ease: 'Quad.easeOut',
+      onComplete: () => { core.destroy(); }
     });
-    
     this.tweens.add({
-      targets: circle2,
-      radius: 20 * UI_SCALE,
+      targets: ring,
+      radius: radiusPx,
       alpha: 0,
-      duration: 300,
-      ease: 'Power2',
-      delay: 50,
-      onComplete: () => circle2.destroy()
+      duration: isSuper ? 460 : 340,
+      ease: 'Cubic.easeOut',
+      onComplete: () => { ring.destroy(); }
     });
   }
   
