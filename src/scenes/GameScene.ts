@@ -30,11 +30,13 @@ export class GameScene extends Phaser.Scene {
   private baseZoneGraphics!: Phaser.GameObjects.Graphics;
   
   // Настройки спавна врагов
-  private totalEnemiesToSpawn: number = 100;   // Монстров на уровне (условие победы)
+  private currentLevel: number = 1;          // Текущий уровень (1..MAX_LEVEL)
+  private totalEnemiesToSpawn: number = 100; // Монстров на уровне = level * 100
   private enemiesSpawned: number = 0;        // Сколько уже заспавнено
   private maxEnemiesOnScreen: number = 1000;   // Максимум на экране
   private enemyCount: number = 0;           // Текущее количество на экране
   private victoryShown: boolean = false;     // Экран победы показан
+  private gameOverShown: boolean = false;    // Экран поражения показан
   
   // Здоровье базы
   private baseHealth: number = 1000;        // Начальное здоровье базы
@@ -75,6 +77,10 @@ export class GameScene extends Phaser.Scene {
   private static readonly BASE_RATIO = 1 / 6;
   private static readonly COLOR_BATTLEFIELD_BG = 0x0a0a1a;
   private static readonly COLOR_BASE_BG = 0x0a1a0a;
+  /** Доступно уровней: уровень N = N*100 монстров (50-й = 5000) */
+  private static readonly MAX_LEVEL = 50;
+  /** Монстров на первом уровне и шаг роста за уровень */
+  private static readonly MONSTERS_PER_LEVEL_STEP = 100;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -107,6 +113,8 @@ export class GameScene extends Phaser.Scene {
     this.baseHealth = this.baseMaxHealth;
     this.spawnTimer = 0;
     this.victoryShown = false;
+    this.gameOverShown = false;
+    this.totalEnemiesToSpawn = this.currentLevel * GameScene.MONSTERS_PER_LEVEL_STEP;
 
     // Fluid simulation: воркер физики толпы (fallback — main-thread путь)
     this.fluidCtrl = new FluidSimulationController();
@@ -584,7 +592,7 @@ export class GameScene extends Phaser.Scene {
 
     // Условие победы: все монстры уровня заспавнены и поле чисто
     // (дошедшие до базы сняли HP, но убить их уже нельзя — они не в счёт)
-    if (!this.victoryShown &&
+    if (!this.victoryShown && !this.gameOverShown &&
         this.enemiesSpawned >= this.totalEnemiesToSpawn &&
         this.enemyCount === 0) {
       this.victoryShown = true;
@@ -723,6 +731,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private showGameOver(): void {
+    this.gameOverShown = true;
     const gameOverText = this.add.text(
       this.cameras.main.centerX,
       this.cameras.main.centerY,
@@ -734,14 +743,15 @@ export class GameScene extends Phaser.Scene {
         strokeThickness: 4 * UI_SCALE
       }
     );
-    gameOverText.setOrigin(0.5);
+    gameOverText.setOrigin(0.5).setDepth(1100);
   }
 
   private showVictory(): void {
+    const last = this.currentLevel >= GameScene.MAX_LEVEL;
     const victoryText = this.add.text(
       this.cameras.main.centerX,
       this.cameras.main.centerY,
-      'ПОБЕДА!',
+      last ? 'ИГРА ПРОЙДЕНА!' : 'ПОБЕДА!',
       {
         font: `${48 * UI_SCALE}px Arial`,
         color: '#ffd700',
@@ -786,7 +796,7 @@ export class GameScene extends Phaser.Scene {
     const simTag = this.fluidCtrl?.isWorkerMode ? 'W' : 'M';
     this.debugText.setText([
       `HP: ${this.baseHealth}/${this.baseMaxHealth} (${healthPercent}%)`,
-      `Монстры: ${this.enemyCount}/${this.maxEnemiesOnScreen} | Интервал: ${this.spawnInterval}мс`,
+      `Ур.${this.currentLevel} | Монстры: ${this.enemyCount}/${this.maxEnemiesOnScreen}`,
       `Sim${simTag}: ${this.simStepMs.toFixed(1)}мс | Всего: ${this.enemiesSpawned} | FPS: ${Math.round(this.game.loop.actualFps)}`
     ]);
     
@@ -952,11 +962,11 @@ export class GameScene extends Phaser.Scene {
       () => `${this.spawnInterval}`
     );
 
-    // Монстры уровня: победа при полной зачистке (шаг 100 — ГДД/запрос)
-    addRow('Монстров на уровне',
-      () => { this.totalEnemiesToSpawn = Math.max(100, this.totalEnemiesToSpawn - 100); },
-      () => { this.totalEnemiesToSpawn = Math.min(100000, this.totalEnemiesToSpawn + 100); },
-      () => `${this.totalEnemiesToSpawn}`
+    // Уровень: N даёт N*100 монстров; победа открывает следующий
+    addRow('Уровень (x100 монстров)',
+      () => { this.setLevel(this.currentLevel - 1); },
+      () => { this.setLevel(this.currentLevel + 1); },
+      () => `${this.currentLevel} (${this.totalEnemiesToSpawn})`
     );
 
     // Одновременный лимит живых монстров (потолок = ёмкость физики)
@@ -1087,17 +1097,84 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupInput(): void {
-    // Тап по полю боя: обычная молния либо (в режиме супер силы) супер атака.
+    // Тап по полю боя: победа -> следующий уровень, поражение -> рестарт уровня,
+    // обычная молния либо (в режиме супер силы) супер атака.
     // Тапы по поп-апу настроек поле боя не затрагивают
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       if (this.settingsOpen) return;
       if (!this.battlefieldZone.contains(pointer.x, pointer.y)) return;
+
+      if (this.victoryShown) {
+        this.nextLevel();
+        return;
+      }
+      if (this.gameOverShown) {
+        this.restartLevel();
+        return;
+      }
 
       if (this.godPower.isArmed) {
         this.castSuperAttack(pointer.x, pointer.y);
       } else {
         this.castLightning(pointer.x, pointer.y);
       }
+    });
+  }
+
+  // --- Система уровней ---
+
+  /** Выбор уровня в поп-апе: перезапуск с указанного уровня */
+  private setLevel(level: number): void {
+    this.currentLevel = Phaser.Math.Clamp(level, 1, GameScene.MAX_LEVEL);
+    this.restartLevel();
+  }
+
+  /** Победа: следующий уровень (на 100 монстров больше) */
+  private nextLevel(): void {
+    this.setLevel(this.currentLevel + 1);
+  }
+
+  /**
+   * Перезапуск текущего уровня: снятие всех живых монстров, сброс
+   * счётчиков спавна и HP базы. Seed и сгенерированный лабиринт сохраняются
+   */
+  private restartLevel(): void {
+    const children = this.enemies.getChildren() as any[];
+    for (let i = 0; i < children.length; i++) {
+      const e = children[i];
+      if (e.active) {
+        this.killEnemy(e);
+      }
+    }
+    this.enemiesSpawned = 0;
+    this.spawnTimer = 0;
+    this.totalEnemiesToSpawn = this.currentLevel * GameScene.MONSTERS_PER_LEVEL_STEP;
+    this.baseHealth = this.baseMaxHealth;
+    this.victoryShown = false;
+    this.gameOverShown = false;
+    this.showLevelBanner();
+  }
+
+  /** Баннер «УРОВЕНЬ N» по центру поля, плавно гаснет */
+  private showLevelBanner(): void {
+    const banner = this.add.text(
+      this.cameras.main.centerX,
+      this.cameras.main.centerY,
+      `УРОВЕНЬ ${this.currentLevel}`,
+      {
+        font: `bold ${36 * UI_SCALE}px Arial`,
+        color: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 4 * UI_SCALE
+      }
+    ).setOrigin(0.5).setDepth(1100);
+
+    this.tweens.add({
+      targets: banner,
+      alpha: 0,
+      delay: 900,
+      duration: 600,
+      onComplete: () => { banner.destroy(); }
     });
   }
 
