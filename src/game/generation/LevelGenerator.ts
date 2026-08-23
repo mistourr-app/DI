@@ -88,6 +88,8 @@ export interface Level {
    * угла поля боя. Вне поля боя возвращает false.
    */
   isBlocked(x: number, y: number): boolean;
+  /** Сетка коллизий для fluid worker (копия ссылки; сетка иммутабельна после генерации) */
+  getCollisionField(): { cols: number; rows: number; cellSize: number; blocked: Uint8Array };
 }
 
 // ============================================================
@@ -147,6 +149,16 @@ export class LevelGenerator {
     // --- 3. Гарантия 100% проходимости от входа к выходу ---
     this.ensurePassability(grid, cols, rows, width, height, bottomMargin, passageWidth);
 
+    // --- 3.5 Заливка недренируемых карманов ---
+    // Движение монстров строго вниз: любая «яма» без пути вниз/вбок к
+    // нижней полосе — пожизненная ловушка. Заливаем такие клетки.
+    this.fillUndrained(grid, cols, rows, bottomMargin);
+
+    // --- 3.6 Гарантия открытых входов сверху ---
+    // Заливка могла запечатать весь верхний ряд (полости под входами).
+    // Тогда монстрам некуда входить — пробиваем сквозные дренажные шахты.
+    this.ensureTopEntrances(grid, cols, rows, height, bottomMargin, passageWidth);
+
     // --- 4. Контурная трассировка блобов -> сглаженные полигоны ---
     const obstacles = this.buildPolygons(grid, cols, rows);
 
@@ -169,7 +181,14 @@ export class LevelGenerator {
           return false; // вне поля боя коллизий нет
         }
         return grid[cy * cols + cx] === 1;
-      }
+      },
+      getCollisionField: (): { cols: number; rows: number; cellSize: number; blocked: Uint8Array } => ({
+        cols,
+        rows,
+        cellSize: CELL,
+        // Сетка иммутабельна после генерации — отдаём ссылку без копии
+        blocked: grid
+      })
     };
   }
 
@@ -286,6 +305,100 @@ export class LevelGenerator {
         break;
       }
     }
+  }
+
+  /**
+   * Гарантия открытого верха: если после заливки карманов в верхнем ряду
+   * не осталось свободных клеток, пробиваем вертикальные дренажные шахты
+   * от кромки до нижней полосы (шаг ~240px). Шахта — цепочка свободных
+   * клеток друг под другом, поэтому она дренируема по построению и не
+   * закрывается повторной заливкой.
+   */
+  private ensureTopEntrances(
+    grid: Uint8Array,
+    cols: number,
+    rows: number,
+    height: number,
+    bottomMargin: number,
+    passageWidth: number
+  ): void {
+    let open = false;
+    for (let cx = 0; cx < cols; cx++) {
+      if (grid[cx] === 0) {
+        open = true;
+        break;
+      }
+    }
+    if (open) return;
+
+    const brush = Math.max(passageWidth / 2, CELL * 1.25);
+    const shafts = Math.max(2, Math.floor((cols * CELL) / 240));
+    const ty = height - bottomMargin * 0.5;
+    for (let k = 0; k < shafts; k++) {
+      const x = ((k + 0.5) / shafts) * cols * CELL;
+      this.carveCorridor(grid, cols, rows, x, -CELL, x, ty, brush);
+    }
+
+    // Шахты освободили новые клетки у стен — финальная заливка карманов
+    this.fillUndrained(grid, cols, rows, bottomMargin);
+  }
+
+  /**
+   * Заливка недренируемых клеток (глубокие выемки, замкнутые полости).
+   *
+   * Семантика движения монстров: вниз, если свободно; иначе скольжение
+   * вбок по строке. Клетка «безопасна», только если из неё есть путь
+   * {вниз, влево, вправо} до нижней свободной полосы. Считаем снизу
+   * вверх: прямое падение из клетки ниже + горизонтальное замыкание
+   * внутри строки (два прохода LR/RL покрывают интервал целиком).
+   * Все свободные небезопасные клетки заливаются как препятствия —
+   * полигоны для отрисовки строятся уже после, поэтому ландшафт
+   * остаётся бесшовным. Детерминизм не нарушен: чистая функция сетки.
+   */
+  private fillUndrained(grid: Uint8Array, cols: number, rows: number, bottomMargin: number): number {
+    const botRows = Math.min(rows, Math.ceil(bottomMargin / CELL));
+    const safe = new Uint8Array(cols * rows);
+
+    // Нижняя свободная полоса — сток, все её клетки безопасны
+    for (let cy = rows - botRows; cy < rows; cy++) {
+      const row = cy * cols;
+      for (let cx = 0; cx < cols; cx++) {
+        safe[row + cx] = 1;
+      }
+    }
+
+    for (let cy = rows - botRows - 1; cy >= 0; cy--) {
+      const row = cy * cols;
+      const below = row + cols;
+
+      // Падение прямо вниз
+      for (let cx = 0; cx < cols; cx++) {
+        if (grid[row + cx] === 0 && safe[below + cx] === 1) {
+          safe[row + cx] = 1;
+        }
+      }
+      // Скольжение вбок вдоль строки
+      for (let cx = 1; cx < cols; cx++) {
+        if (grid[row + cx] === 0 && safe[row + cx] === 0 && safe[row + cx - 1] === 1) {
+          safe[row + cx] = 1;
+        }
+      }
+      for (let cx = cols - 2; cx >= 0; cx--) {
+        if (grid[row + cx] === 0 && safe[row + cx] === 0 && safe[row + cx + 1] === 1) {
+          safe[row + cx] = 1;
+        }
+      }
+    }
+
+    // Небезопасные свободные клетки -> препятствие
+    let filled = 0;
+    for (let i = 0; i < grid.length; i++) {
+      if (grid[i] === 0 && safe[i] === 0) {
+        grid[i] = 1;
+        filled++;
+      }
+    }
+    return filled;
   }
 
   /** Очищает круги радиуса r вдоль отрезка (x0;y0)->(x1;y1) */

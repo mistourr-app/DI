@@ -1,10 +1,15 @@
 import Phaser from 'phaser';
 import { LevelGenerator } from '../game/generation/LevelGenerator';
+import { FluidSimulationController, type FrameInfo } from '../game/fluid/FluidSimulationController';
+import { OUT_STRIDE, type FluidParams } from '../game/fluid/fluidProtocol';
+import { GameConfig } from '../game/config/GameConfig';
 
 // Радиус круга в текстуре 'enemy' (SVG 20x20, circle r=8) — для масштабирования
 const ENEMY_TEX_RADIUS = 8;
 // Период обновления дебаг-текста, мс (setText растеризует текстуру — нельзя каждый кадр)
 const DEBUG_TEXT_INTERVAL = 250;
+// Заводские множители сил жидкости — для кнопки сброса слайдеров
+const FLUID_DEFAULTS = { ...GameConfig.enemies.fluid };
 
 export class GameScene extends Phaser.Scene {
   private enemies!: Phaser.GameObjects.Group;
@@ -43,6 +48,12 @@ export class GameScene extends Phaser.Scene {
   private levelSeed: string = 'seed-' + Math.floor(Math.random() * 1e9).toString(36);
   private spawnGateIdx: number = 0; // раунд-робин по входам
 
+  // Fluid simulation: физика толпы в воркере (fallback — main-thread путь)
+  private fluidCtrl!: FluidSimulationController;
+  private spriteById = new Map<number, Phaser.GameObjects.Image>();
+  /** Сглаженная длительность шага воркера, мс (EMA по кадрам) */
+  private simStepMs: number = 0;
+
   // Константы
   private static readonly BATTLEFIELD_RATIO = 5 / 6;
   private static readonly BASE_RATIO = 1 / 6;
@@ -80,6 +91,11 @@ export class GameScene extends Phaser.Scene {
     this.baseHealth = this.baseMaxHealth;
     this.spawnTimer = 0;
 
+    // Fluid simulation: воркер физики толпы (fallback — main-thread путь)
+    this.fluidCtrl = new FluidSimulationController();
+    this.fluidCtrl.onFrame = this.handleFluidFrame;
+    this.syncFluidWorld();
+
     // Генерация уровня по seed (локальные координаты поля боя)
     this.levelGenerator = new LevelGenerator();
     this.generateLevel();
@@ -103,7 +119,45 @@ export class GameScene extends Phaser.Scene {
     this.events.once('shutdown', () => {
       this.scale.off('resize', this.handleResize, this);
       this.settingsOpen = false;
+      // Останавливаем воркер физики и чистим карту спрайт<->агент
+      if (this.fluidCtrl) {
+        this.fluidCtrl.destroy();
+      }
+      this.spriteById.clear();
     });
+  }
+
+  /** Границы/база/параметры мира -> в воркер (локальные координаты) */
+  private syncFluidWorld(): void {
+    const z = this.battlefieldZone;
+    this.fluidCtrl.init(
+      z.width,
+      z.height,
+      this.base.x - z.x,
+      this.base.y - z.y,
+      this.buildFluidParams()
+    );
+  }
+
+  private buildFluidParams(): FluidParams {
+    const f = GameConfig.enemies.fluid;
+    return {
+      targetSpeed: this.enemySpeed,
+      enemyRadius: this.enemySize,
+      density: f.density,
+      pressure: f.pressure,
+      viscosity: f.viscosity,
+      separation: f.separation,
+      cohesion: f.cohesion,
+      alignment: f.alignment
+    };
+  }
+
+  /** Пробрасывает актуальные скорость/размер в воркер физики */
+  private syncFluidParams(): void {
+    if (this.fluidCtrl?.isWorkerMode) {
+      this.fluidCtrl.setParams(this.buildFluidParams());
+    }
   }
   
   private handleResize(gameSize: Phaser.Structs.Size): void {
@@ -326,15 +380,13 @@ export class GameScene extends Phaser.Scene {
     });
     // Поднимаем текст на максимальный depth, чтобы был выше всех монстров
     this.debugText.setDepth(1000);
-    // ВРЕМЕННО: панель у верхнего края экрана, чтобы не перекрывать входы
     this.placeDebugText();
   }
 
-  /** Панель инфо у самого верха экрана (над полем боя, если есть место) */
+  /** Панель инфо у верхней кромки поля боя — всегда внутри игровой области */
   private placeDebugText(): void {
     if (!this.debugText || !this.gameArea) return;
-    const topY = Math.max(2, this.gameArea.y - 28);
-    this.debugText.setPosition(this.gameArea.x + 8, topY);
+    this.debugText.setPosition(this.gameArea.x + 8, this.gameArea.y + 4);
   }
 
   private createEnemy(): void {
@@ -383,6 +435,22 @@ export class GameScene extends Phaser.Scene {
     const e = enemy as any;
     e.vx = Phaser.Math.FloatBetween(-0.1, 0.1);
     e.vy = this.enemySpeed;
+    e.aid = -1;
+
+    // Регистрируем агента в воркере физики (координаты -> локальные поля боя)
+    if (this.fluidCtrl?.isWorkerMode) {
+      const id = this.fluidCtrl.addAgent(
+        enemy.x - this.battlefieldZone.x,
+        enemy.y - this.battlefieldZone.y,
+        e.vx,
+        e.vy,
+        this.enemySize
+      );
+      if (id >= 0) {
+        e.aid = id;
+        this.spriteById.set(id, enemy);
+      }
+    }
 
     // Увеличиваем счётчики
     this.enemyCount++;
@@ -401,6 +469,12 @@ export class GameScene extends Phaser.Scene {
       obstacleDensity: 0.4
     });
     this.renderObstacles();
+
+    // Новая сетка коллизий и границы мира -> в воркер физики
+    if (this.fluidCtrl?.isWorkerMode) {
+      this.fluidCtrl.setField(this.level.getCollisionField());
+      this.syncFluidWorld();
+    }
   }
 
   private renderObstacles(): void {
@@ -460,12 +534,46 @@ export class GameScene extends Phaser.Scene {
       this.spawnTimer = 0;
     }
 
-    // Обновляем движение врагов
-    this.updateEnemyMovement();
+    // Движение врагов: физика в воркере либо legacy main-thread путь
+    if (this.fluidCtrl && this.fluidCtrl.isWorkerMode) {
+      this.fluidCtrl.update(this.game.loop.delta / 1000);
+    } else {
+      this.updateEnemyMovement();
+    }
 
     // Обновляем debug информацию
     this.updateDebugInfo();
   }
+
+  /**
+   * Кадр из воркера: синхронизация позиций спрайтов + агенты,
+   * достигшие базы (воркер уже освободил их слоты).
+   */
+  private handleFluidFrame = (info: FrameInfo): void => {
+    const d = info.data;
+    const ox = this.battlefieldZone.x;
+    const oy = this.battlefieldZone.y;
+
+    // Сглаженная метрика цены шага физики (для дебаг-панели)
+    this.simStepMs = this.simStepMs === 0 ? info.stepMs : this.simStepMs * 0.9 + info.stepMs * 0.1;
+
+    for (let i = 0; i < info.count; i++) {
+      const o = i * OUT_STRIDE;
+      const id = d[o];
+      const sprite = this.spriteById.get(id);
+      if (!sprite) continue;
+      sprite.setPosition(ox + d[o + 1], oy + d[o + 2]);
+    }
+
+    for (let a = 0; a < info.arrivedCount; a++) {
+      const id = info.arrived[a];
+      const sprite = this.spriteById.get(id);
+      this.spriteById.delete(id);
+      if (sprite) {
+        this.handleEnemyReachedBase(sprite);
+      }
+    }
+  };
 
   private updateEnemyMovement(): void {
     const baseX = this.base.x;
@@ -609,10 +717,11 @@ export class GameScene extends Phaser.Scene {
     const healthPercent = Math.round((this.baseHealth / this.baseMaxHealth) * 100);
     
     // Компактный текст в 3 строки, чтобы поместиться в игровом поле
+    const simTag = this.fluidCtrl?.isWorkerMode ? 'W' : 'M';
     this.debugText.setText([
       `HP: ${this.baseHealth}/${this.baseMaxHealth} (${healthPercent}%)`,
       `Мон: ${this.enemyCount}/${this.maxEnemiesOnScreen} | Spawn: ${this.spawnInterval}мс`,
-      `Спавн: ${this.enemiesSpawned}/${Math.floor(this.totalEnemiesToSpawn/1000)}K | Spd: ${this.enemySpeed.toFixed(2)} | Sz: ${this.enemySize} | FPS: ${Math.round(this.game.loop.actualFps)}`
+      `Sim${simTag}: ${this.simStepMs.toFixed(1)}мс | Спавн: ${this.enemiesSpawned}/${Math.floor(this.totalEnemiesToSpawn/1000)}K | FPS: ${Math.round(this.game.loop.actualFps)}`
     ]);
     
     // Позиционируем текст у верхнего края экрана
@@ -633,13 +742,16 @@ export class GameScene extends Phaser.Scene {
     const wasOpen = this.settingsOpen;
     this.closeSettingsPopup();
 
-    const screenWidth = this.cameras.main.width;
-    const btn = this.add.text(screenWidth - 48, 10, '⚙', {
+    // Кнопка живёт в одной строке с дебаг-панелью и всегда внутри
+    // игровой области: правый верхний угол поля боя
+    const ga = this.gameArea;
+    const btn = this.add.text(0, 0, '⚙', {
       font: '22px Arial',
       color: '#ffffff',
       backgroundColor: '#333333',
       padding: { x: 10, y: 6 }
     }).setScrollFactor(0).setDepth(1000).setInteractive({ useHandCursor: true });
+    btn.setPosition(ga.x + ga.width - btn.width - 10, ga.y + 4);
     btn.on('pointerdown', () => { this.toggleSettingsPopup(); });
     btn.on('pointerover', () => btn.setStyle({ backgroundColor: '#555555' }));
     btn.on('pointerout', () => btn.setStyle({ backgroundColor: '#333333' }));
@@ -679,7 +791,8 @@ export class GameScene extends Phaser.Scene {
     const rowHeight = 30;
     const genBtnH = 46;
     const padBottom = 16;
-    const panelHeight = headerH + 5 * rowHeight + genBtnH + padBottom;
+    // 5 параметров спавна + 4 силы + кнопка сброса сил
+    const panelHeight = headerH + 10 * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(20, screenHeight * 0.06));
 
@@ -712,10 +825,12 @@ export class GameScene extends Phaser.Scene {
     closeBtn.on('pointerout', () => closeBtn.setStyle({ backgroundColor: '#333333' }));
     popup.add(closeBtn);
 
-    // Строки контролов: [-] значение [+] метка
+    // Строки контролов: метка параметра слева, [-] значение [+]+ справа
     let y = py + headerH;
     const btnW = 26;
     const valW = 56;
+    const gap = 4;
+    const ctrlBlockW = btnW * 2 + valW + gap * 2;
     const x0 = px + 14;
 
     const addRow = (label: string,
@@ -723,7 +838,16 @@ export class GameScene extends Phaser.Scene {
       plusCb: () => void,
       getValue: () => string): void => {
 
-      const minus = this.add.text(x0, y, '-', {
+      // Название параметра (что он делает) — слева
+      popup.add(this.add.text(x0, y + 3, label, {
+        font: '12px Arial',
+        color: '#bbbbbb'
+      }));
+
+      // Блок управления прижат к правому краю панели
+      const ctrlX = px + panelWidth - 14 - ctrlBlockW;
+
+      const minus = this.add.text(ctrlX, y, '-', {
         font: '15px Arial',
         color: '#ff6666',
         backgroundColor: '#444444',
@@ -734,14 +858,14 @@ export class GameScene extends Phaser.Scene {
       minus.on('pointerout', () => minus.setStyle({ backgroundColor: '#444444' }));
       popup.add(minus);
 
-      const valueText = this.add.text(x0 + btnW + 8, y, getValue(), {
-        font: 'bold 14px Arial',
+      const valueText = this.add.text(ctrlX + btnW + gap + valW / 2, y + 3, getValue(), {
+        font: 'bold 13px Arial',
         color: '#ffffff'
-      });
+      }).setOrigin(0.5, 0);
       popup.add(valueText);
       this.popupUpdaters.push({ text: valueText, getValue });
 
-      const plus = this.add.text(x0 + btnW + 14 + valW, y, '+', {
+      const plus = this.add.text(ctrlX + btnW + gap + valW + gap, y, '+', {
         font: '15px Arial',
         color: '#88ff88',
         backgroundColor: '#444444',
@@ -752,48 +876,97 @@ export class GameScene extends Phaser.Scene {
       plus.on('pointerout', () => plus.setStyle({ backgroundColor: '#444444' }));
       popup.add(plus);
 
-      popup.add(this.add.text(x0 + btnW + 20 + valW + btnW, y, label, {
-        font: '13px Arial',
-        color: '#bbbbbb'
-      }));
-
       y += rowHeight;
     };
 
-    // Spawn Interval
-    addRow('мс',
+    // Интервал между спавнами монстров
+    addRow('Интервал спавна, мс',
       () => { this.spawnInterval = Math.max(10, this.spawnInterval - 10); },
       () => { this.spawnInterval = Math.min(5000, this.spawnInterval + 10); },
       () => `${this.spawnInterval}`
     );
 
-    // Total Enemies
-    addRow('тыс.',
+    // Общее число монстров за уровень
+    addRow('Всего монстров, тыс.',
       () => { this.totalEnemiesToSpawn = Math.max(100, this.totalEnemiesToSpawn - 100); },
       () => { this.totalEnemiesToSpawn += 100; },
       () => `${Math.floor(this.totalEnemiesToSpawn / 1000)}K`
     );
 
-    // Max On Screen
-    addRow('макс.',
+    // Одновременный лимит живых монстров
+    addRow('Максимум на экране',
       () => { this.maxEnemiesOnScreen = Math.max(10, this.maxEnemiesOnScreen - 10); },
       () => { this.maxEnemiesOnScreen = Math.min(1000, this.maxEnemiesOnScreen + 10); },
       () => `${this.maxEnemiesOnScreen}`
     );
 
-    // Enemy Speed
-    addRow('скор.',
-      () => { this.enemySpeed = Math.max(0.1, this.enemySpeed - 0.05); },
-      () => { this.enemySpeed = Math.min(10, this.enemySpeed + 0.05); },
+    // Базовая скорость движения одного монстра
+    addRow('Скорость монстров',
+      () => { this.enemySpeed = Math.max(0.1, this.enemySpeed - 0.05); this.syncFluidParams(); },
+      () => { this.enemySpeed = Math.min(10, this.enemySpeed + 0.05); this.syncFluidParams(); },
       () => `${this.enemySpeed.toFixed(2)}`
     );
 
-    // Enemy Size
-    addRow('разм.',
-      () => { this.enemySize = Math.max(2, this.enemySize - 1); this.applyEnemySizeToAll(); },
-      () => { this.enemySize = Math.min(50, this.enemySize + 1); this.applyEnemySizeToAll(); },
+    // Визуальный размер монстра и его хитбокс
+    addRow('Размер монстров',
+      () => { this.enemySize = Math.max(2, this.enemySize - 1); this.applyEnemySizeToAll(); this.syncFluidParams(); },
+      () => { this.enemySize = Math.min(50, this.enemySize + 1); this.applyEnemySizeToAll(); this.syncFluidParams(); },
       () => `${this.enemySize}`
     );
+
+    // --- Силы жидкости: тюнинг в реальном времени (мутаторы GameConfig -> syncFluidParams) ---
+    const F = GameConfig.enemies.fluid;
+
+    // Разлетаются ли монстры при сближении (анти-стопки)
+    addRow('Расталкивание',
+      () => { F.separation = Math.max(0, +(F.separation - 0.25).toFixed(2)); this.syncFluidParams(); },
+      () => { F.separation = Math.min(6, +(F.separation + 0.25).toFixed(2)); this.syncFluidParams(); },
+      () => F.separation.toFixed(2)
+    );
+
+    // Распирание плотных мест толпы
+    addRow('Давление в толпе',
+      () => { F.pressure = Math.max(0, +(F.pressure - 0.05).toFixed(2)); this.syncFluidParams(); },
+      () => { F.pressure = Math.min(2, +(F.pressure + 0.05).toFixed(2)); this.syncFluidParams(); },
+      () => F.pressure.toFixed(2)
+    );
+
+    // Согласованность движения, гладкость потока
+    addRow('Вязкость потока',
+      () => { F.viscosity = Math.max(0, +(F.viscosity - 0.001).toFixed(3)); this.syncFluidParams(); },
+      () => { F.viscosity = Math.min(0.05, +(F.viscosity + 0.001).toFixed(3)); this.syncFluidParams(); },
+      () => F.viscosity.toFixed(3)
+    );
+
+    // Держатся ли рукава потока вместе
+    addRow('Сплочённость потока',
+      () => { F.cohesion = Math.max(0, +(F.cohesion - 0.1).toFixed(2)); this.syncFluidParams(); },
+      () => { F.cohesion = Math.min(3, +(F.cohesion + 0.1).toFixed(2)); this.syncFluidParams(); },
+      () => F.cohesion.toFixed(2)
+    );
+
+    // Кнопка сброса сил к заводским значениям
+    const rstY = y + 4;
+    const rstBg = this.add.graphics();
+    rstBg.fillStyle(0x444444, 1);
+    rstBg.fillRoundedRect(px + 14, rstY, panelWidth - 28, 22, 6);
+    popup.add(rstBg);
+
+    const rstLabel = this.add.text(px + panelWidth / 2, rstY + 11, 'Сбросить силы жидкости', {
+      font: 'bold 12px Arial',
+      color: '#dddddd'
+    }).setOrigin(0.5);
+    popup.add(rstLabel);
+
+    const rstZone = this.add.zone(px + 14, rstY, panelWidth - 28, 22).setOrigin(0, 0)
+      .setInteractive({ useHandCursor: true });
+    rstZone.on('pointerdown', () => {
+      Object.assign(GameConfig.enemies.fluid, FLUID_DEFAULTS);
+      this.updatePopupValues();
+      this.syncFluidParams();
+    });
+    popup.add(rstZone);
+    y += rowHeight;
 
     // Кнопка генерации нового уровня
     const genY = y + 6;

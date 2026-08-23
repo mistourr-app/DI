@@ -18,5 +18,6 @@
     "rootDir": "./src"
   },
   "include": ["src"],
+  "exclude": ["src/game/ecs"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

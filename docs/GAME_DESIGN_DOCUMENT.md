@@ -113,7 +113,7 @@ src/
 - ✅ Перегенерация уровня при изменении размера окна (тот же seed)
 
 ### Что нужно сделать:
-1. Реализовать fluid simulation через Web Workers
+1. Доделать «жидкое» поведение толпы: separation/pressure/viscosity в воркере (каркас Web Worker готов, см. [FLUID_SIMULATION.md](./FLUID_SIMULATION.md))
 2. Добавить систему стихий (4 элемента + комбинации)
 3. Настроить PWA (Service Workers, Web App Manifest)
 
