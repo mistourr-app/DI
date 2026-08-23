@@ -70,6 +70,8 @@ export interface LevelParams {
   passageWidth?: number;
   /** Плотность препятствий 0.0 - 1.0 (по умолчанию 0.4) */
   obstacleDensity?: number;
+  /** Множитель размера структур: 1 = база, больше = крупнее блобы (по умолчанию 1) */
+  blobScale?: number;
 }
 
 export interface Level {
@@ -123,6 +125,7 @@ export class LevelGenerator {
     const height = Math.max(300, Math.floor(params.height));
     const passageWidth = clamp(params.passageWidth ?? 60, 24, 200);
     const density = clamp(params.obstacleDensity ?? 0.4, 0.05, 0.95);
+    const blobScale = clamp(params.blobScale ?? 1, 0.5, 3);
     const bottomMargin = clamp(height * BOTTOM_FREE_RATIO, CELL * 2, height * 0.25);
 
     const cols = Math.ceil(width / CELL);
@@ -146,8 +149,11 @@ export class LevelGenerator {
         // Свободная зона только внизу: верх и бока без отступа, блобы
         // могут начинаться прямо от кромки поля
         if (wy > height - bottomMargin) continue;
-        const n1 = noise.noise2D(wx * 0.0045, wy * 0.0045);
-        const n2 = noise.noise2D(wx * 0.015 + 512.7, wy * 0.015 + 217.3);
+        // Частоты шума делятся на blobScale: множитель >1 — структуры крупнее
+        const f1 = 0.0045 / blobScale;
+        const f2 = 0.015 / blobScale;
+        const n1 = noise.noise2D(wx * f1, wy * f1);
+        const n2 = noise.noise2D(wx * f2 + 512.7, wy * f2 + 217.3);
         const u = (n1 * 0.72 + n2 * 0.28 + 1) / 2;
         if (u > threshold) {
           grid[cy * cols + cx] = 1;

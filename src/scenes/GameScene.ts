@@ -50,6 +50,9 @@ export class GameScene extends Phaser.Scene {
   private obstacleGraphics: Phaser.GameObjects.Graphics | null = null;
   private levelSeed: string = 'seed-' + Math.floor(Math.random() * 1e9).toString(36);
   private spawnGateIdx: number = 0; // раунд-робин по входам
+  // Параметры генерации (крутятся в дебаг поп-апе)
+  private genDensity: number = 0.4;
+  private genBlobScale: number = 1.0;
 
   // Fluid simulation: физика толпы в воркере (fallback — main-thread путь)
   private fluidCtrl!: FluidSimulationController;
@@ -487,7 +490,8 @@ export class GameScene extends Phaser.Scene {
       width: zone.width,
       height: zone.height,
       passageWidth: 60,
-      obstacleDensity: 0.4
+      obstacleDensity: this.genDensity,
+      blobScale: this.genBlobScale
     });
     this.renderObstacles();
 
@@ -812,8 +816,8 @@ export class GameScene extends Phaser.Scene {
     const rowHeight = 30;
     const genBtnH = 46;
     const padBottom = 16;
-    // 5 параметров спавна + 4 силы + кнопка сброса сил
-    const panelHeight = headerH + 10 * rowHeight + genBtnH + padBottom;
+    // 5 параметров спавна + 2 генерации + 4 силы + строка сбросов
+    const panelHeight = headerH + 12 * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(20, screenHeight * 0.06));
 
@@ -935,6 +939,19 @@ export class GameScene extends Phaser.Scene {
       () => `${this.enemySize}`
     );
 
+    // --- Параметры генерации уровня: пересборка на лету с тем же seed ---
+    addRow('Плотность препятствий',
+      () => { this.genDensity = Math.max(0.05, +(this.genDensity - 0.05).toFixed(2)); this.generateLevel(); },
+      () => { this.genDensity = Math.min(0.95, +(this.genDensity + 0.05).toFixed(2)); this.generateLevel(); },
+      () => this.genDensity.toFixed(2)
+    );
+
+    addRow('Размер структур',
+      () => { this.genBlobScale = Math.max(0.6, +(this.genBlobScale - 0.1).toFixed(1)); this.generateLevel(); },
+      () => { this.genBlobScale = Math.min(2, +(this.genBlobScale + 0.1).toFixed(1)); this.generateLevel(); },
+      () => `x${this.genBlobScale.toFixed(1)}`
+    );
+
     // --- Силы жидкости: тюнинг в реальном времени (мутаторы GameConfig -> syncFluidParams) ---
     const F = GameConfig.enemies.fluid;
 
@@ -966,27 +983,39 @@ export class GameScene extends Phaser.Scene {
       () => F.cohesion.toFixed(2)
     );
 
-    // Кнопка сброса сил к заводским значениям
+    // Кнопки сброса (в одну строку): силы и параметры генерации
     const rstY = y + 4;
-    const rstBg = this.add.graphics();
-    rstBg.fillStyle(0x444444, 1);
-    rstBg.fillRoundedRect(px + 14, rstY, panelWidth - 28, 22, 6);
-    popup.add(rstBg);
+    const btnHw = (panelWidth - 28 - 8) / 2;
 
-    const rstLabel = this.add.text(px + panelWidth / 2, rstY + 11, 'Сбросить силы жидкости', {
-      font: 'bold 12px Arial',
-      color: '#dddddd'
-    }).setOrigin(0.5);
-    popup.add(rstLabel);
+    const makeReset = (x: number, w: number, label: string, cb: () => void): void => {
+      const bg = this.add.graphics();
+      bg.fillStyle(0x444444, 1);
+      bg.fillRoundedRect(x, rstY, w, 22, 6);
+      popup.add(bg);
 
-    const rstZone = this.add.zone(px + 14, rstY, panelWidth - 28, 22).setOrigin(0, 0)
-      .setInteractive({ useHandCursor: true });
-    rstZone.on('pointerdown', () => {
+      const label_ = this.add.text(x + w / 2, rstY + 11, label, {
+        font: 'bold 11px Arial',
+        color: '#dddddd'
+      }).setOrigin(0.5);
+      popup.add(label_);
+
+      const zone = this.add.zone(x, rstY, w, 22).setOrigin(0, 0)
+        .setInteractive({ useHandCursor: true });
+      zone.on('pointerdown', cb);
+      popup.add(zone);
+    };
+
+    makeReset(px + 14, btnHw, 'Сброс сил', () => {
       Object.assign(GameConfig.enemies.fluid, FLUID_DEFAULTS);
       this.updatePopupValues();
       this.syncFluidParams();
     });
-    popup.add(rstZone);
+    makeReset(px + 14 + btnHw + 8, btnHw, 'Сброс генерации', () => {
+      this.genDensity = 0.4;
+      this.genBlobScale = 1.0;
+      this.updatePopupValues();
+      this.generateLevel();
+    });
     y += rowHeight;
 
     // Кнопка генерации нового уровня
