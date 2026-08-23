@@ -19,6 +19,7 @@ import {
   type FrameMsg,
   type FluidWorld,
   type DispOut,
+  blockedAt,
   isBoxBlocked,
   moveDownStep
 } from './fluidProtocol';
@@ -127,6 +128,24 @@ function killSlot(slot: number): void {
 }
 
 /**
+ * Возврат агента на спавн (над верхней кромкой). Фейлсейф прогресса И
+ * спасение погребённых после регенерации уровня (слайдеры генерации):
+ * телепорт вместо «копания вверх» сквозь препятствия.
+ */
+function respawnToSpawn(slot: number): void {
+  px[slot] = 20 + Math.random() * Math.max(1, worldW - 40);
+  py[slot] = -20 - Math.random() * 10;
+  vx[slot] = 0;
+  vy[slot] = params.targetSpeed;
+  avoidDir[slot] = 0;
+  avoidFail[slot] = 0;
+  avoidSweep[slot] = 0;
+  avoidHover[slot] = 0;
+  bestY[slot] = py[slot];
+  stallCnt[slot] = 0;
+}
+
+/**
  * Один подшаг интеграции:
  *  Pass A — базовое движение «строго вниз» с обходом блобов по касательной
  *           (общая физика moveDownStep из протокола) + границы + прибытие;
@@ -143,6 +162,13 @@ function integrate(): number {
 
   for (let s = 0; s < MAX_AGENTS; s++) {
     if (!alive[s]) continue;
+
+    // Погребён внутри блоба (уровень пересобран слайдерами) — телепорт
+    // на спавн вместо копания вверх сквозь препятствия
+    if (blockedAt(field, px[s], py[s])) {
+      respawnToSpawn(s);
+      continue;
+    }
 
     const p = { x: px[s], y: py[s] };
     const v = { x: vx[s], y: vy[s] };
@@ -180,16 +206,7 @@ function integrate(): number {
       bestY[s] = py[s];
       stallCnt[s] = 0;
     } else if (++stallCnt[s] > STALL_SUBSTEPS) {
-      px[s] = 20 + Math.random() * Math.max(1, worldW - 40);
-      py[s] = -20 - Math.random() * 10;
-      vx[s] = 0;
-      vy[s] = targetSpeed;
-      avoidDir[s] = 0;
-      avoidFail[s] = 0;
-      avoidSweep[s] = 0;
-      avoidHover[s] = 0;
-      bestY[s] = py[s];
-      stallCnt[s] = 0;
+      respawnToSpawn(s);
     }
 
     // Достижение нижней границы поля => база

@@ -635,11 +635,15 @@ export class GameScene extends Phaser.Scene {
         nvy = (nvy / speed) * maxSpeed;
       }
 
-      // Спасение застрявших: если центр оказался внутри блоба (например,
-      // после смены уровня при живом пуле) — выползаем вверх, над полем
-      // всегда свободно
+      // Погребён внутри блоба (уровень пересобран слайдерами) — телепорт
+      // на спавн вместо копания вверх сквозь препятствия
       if (this.isBlockedWorld(enemy.x, enemy.y)) {
-        enemy.y -= Math.max(targetSpeed, 0.5);
+        enemy.setPosition(
+          Phaser.Math.Between(zone.x + 20, zone.x + zone.width - 20),
+          this.battlefieldZone.y - Phaser.Math.Between(20, 30)
+        );
+        enemy.vx = 0;
+        enemy.vy = targetSpeed;
       }
 
       // Позиция с радиус-коллизией по сетке уровня (скольжение вдоль стен).
@@ -942,7 +946,7 @@ export class GameScene extends Phaser.Scene {
     // --- Параметры генерации уровня: пересборка на лету с тем же seed ---
     addRow('Плотность препятствий',
       () => { this.genDensity = Math.max(0.01, +(this.genDensity - 0.05).toFixed(2)); this.generateLevel(); },
-      () => { this.genDensity = Math.min(1, +(this.genDensity + 0.05).toFixed(2)); this.generateLevel(); },
+      () => { this.genDensity = Math.min(2, +(this.genDensity + 0.05).toFixed(2)); this.generateLevel(); },
       () => this.genDensity.toFixed(2)
     );
 

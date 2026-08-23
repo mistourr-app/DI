@@ -448,11 +448,6 @@ export function moveDownStep(
   avoid: { value: number; failStreak: number; sweep: number; hover: number },
   targetSpeed: number
 ): void {
-  // Спасение застрявших: центр внутри блоба -> выползаем вверх
-  if (blockedAt(field, p.x, p.y)) {
-    p.y -= Math.max(targetSpeed, 0.5);
-  }
-
   const nvx = rand(0.01);
   const nvy = targetSpeed + rand(0.01);
 
