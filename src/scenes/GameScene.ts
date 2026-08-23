@@ -3,7 +3,7 @@ import { LevelGenerator } from '../game/generation/LevelGenerator';
 import { FluidSimulationController, type FrameInfo } from '../game/fluid/FluidSimulationController';
 import { OUT_STRIDE, type FluidParams } from '../game/fluid/fluidProtocol';
 import { GameConfig } from '../game/config/GameConfig';
-import { UI_SCALE } from '../game/config/uiScale';
+import { UI_SCALE, fontPx, padPx } from '../game/config/uiScale';
 
 // Радиус круга в текстуре 'enemy' (SVG 20x20, circle r=8) — для масштабирования
 const ENEMY_TEX_RADIUS = 8;
@@ -778,12 +778,12 @@ export class GameScene extends Phaser.Scene {
     // игровой области: правый верхний угол поля боя
     const ga = this.gameArea;
     const btn = this.add.text(0, 0, '⚙', {
-      font: `${22 * UI_SCALE}px Arial`,
+      font: `${fontPx(22)}px Arial`,
       color: '#ffffff',
       backgroundColor: '#333333',
-      padding: { x: 10 * UI_SCALE, y: 6 * UI_SCALE }
+      padding: { x: padPx(10), y: padPx(6) }
     }).setScrollFactor(0).setDepth(1000).setInteractive({ useHandCursor: true });
-    btn.setPosition(ga.x + ga.width - btn.width - 10 * UI_SCALE, ga.y + 4 * UI_SCALE);
+    btn.setPosition(ga.x + ga.width - btn.width - padPx(10), ga.y + padPx(4));
     btn.on('pointerdown', () => { this.toggleSettingsPopup(); });
     btn.on('pointerover', () => btn.setStyle({ backgroundColor: '#555555' }));
     btn.on('pointerout', () => btn.setStyle({ backgroundColor: '#333333' }));
@@ -818,15 +818,15 @@ export class GameScene extends Phaser.Scene {
     const screenWidth = this.cameras.main.width;
     const screenHeight = this.cameras.main.height;
 
-    const panelWidth = Math.min(300 * UI_SCALE, screenWidth * 0.85);
-    const headerH = 40 * UI_SCALE;
-    const rowHeight = 30 * UI_SCALE;
-    const genBtnH = 46 * UI_SCALE;
-    const padBottom = 16 * UI_SCALE;
+    const panelWidth = Math.min(fontPx(340), screenWidth * 0.92);
+    const headerH = fontPx(46);
+    const rowHeight = fontPx(34);
+    const genBtnH = fontPx(48);
+    const padBottom = padPx(16);
     // 5 параметров спавна + 2 генерации + 4 силы + строка сбросов
     const panelHeight = headerH + 12 * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
-    const py = Math.round(Math.max(20 * UI_SCALE, screenHeight * 0.06));
+    const py = Math.round(Math.max(padPx(20), screenHeight * 0.06));
 
     const popup = this.add.container(0, 0).setScrollFactor(0).setDepth(1200);
     this.settingsPopup = popup;
@@ -834,23 +834,23 @@ export class GameScene extends Phaser.Scene {
     // Фон поп-апа
     const bg = this.add.graphics();
     bg.fillStyle(0x101822, 0.96);
-    bg.fillRoundedRect(px, py, panelWidth, panelHeight, 12 * UI_SCALE);
-    bg.lineStyle(2 * UI_SCALE, 0x4a90d9, 1);
+    bg.fillRoundedRect(px, py, panelWidth, panelHeight, padPx(12));
+    bg.lineStyle(padPx(2), 0x4a90d9, 1);
     bg.strokeRoundedRect(px, py, panelWidth, panelHeight, 12);
     popup.add(bg);
 
     // Заголовок
     popup.add(this.add.text(px + 16, py + 11, 'НАСТРОЙКИ', {
-      font: 'bold ${15 * UI_SCALE}px Arial',
+      font: `bold ${fontPx(17)}px Arial`,
       color: '#ffffff'
     }));
 
     // Кнопка закрытия
     const closeBtn = this.add.text(px + panelWidth - 38, py + 8, '✕', {
-      font: 'bold ${16 * UI_SCALE}px Arial',
+      font: `bold ${fontPx(16)}px Arial`,
       color: '#ff6666',
       backgroundColor: '#333333',
-      padding: { x: 8 * UI_SCALE, y: 2 * UI_SCALE }
+      padding: { x: padPx(8), y: padPx(2) }
     }).setInteractive({ useHandCursor: true });
     closeBtn.on('pointerdown', () => { this.closeSettingsPopup(); });
     closeBtn.on('pointerover', () => closeBtn.setStyle({ backgroundColor: '#555555' }));
@@ -859,11 +859,11 @@ export class GameScene extends Phaser.Scene {
 
     // Строки контролов: метка параметра слева, [-] значение [+]+ справа
     let y = py + headerH;
-    const btnW = 26 * UI_SCALE;
-    const valW = 56 * UI_SCALE;
-    const gap = 4 * UI_SCALE;
+    const btnW = fontPx(28);
+    const valW = fontPx(62);
+    const gap = padPx(4);
     const ctrlBlockW = btnW * 2 + valW + gap * 2;
-    const x0 = px + 14 * UI_SCALE;
+    const x0 = px + padPx(14);
 
     const addRow = (label: string,
       minusCb: () => void,
@@ -871,37 +871,37 @@ export class GameScene extends Phaser.Scene {
       getValue: () => string): void => {
 
       // Название параметра (что он делает) — слева
-      popup.add(this.add.text(x0, y + 3 * UI_SCALE, label, {
-        font: '${12 * UI_SCALE}px Arial',
+      popup.add(this.add.text(x0, y + padPx(3), label, {
+        font: `${fontPx(12)}px Arial`,
         color: '#bbbbbb'
       }));
 
       // Блок управления прижат к правому краю панели
-      const ctrlX = px + panelWidth - 14 * UI_SCALE - ctrlBlockW;
+      const ctrlX = px + panelWidth - padPx(14) - ctrlBlockW;
 
       const minus = this.add.text(ctrlX, y, '-', {
-        font: '${15 * UI_SCALE}px Arial',
+        font: `${fontPx(14)}px Arial`,
         color: '#ff6666',
         backgroundColor: '#444444',
-        padding: { x: 9 * UI_SCALE, y: 3 * UI_SCALE }
+        padding: { x: padPx(9), y: padPx(3) }
       }).setInteractive({ useHandCursor: true });
       minus.on('pointerdown', () => { minusCb(); this.updatePopupValues(); });
       minus.on('pointerover', () => minus.setStyle({ backgroundColor: '#666666' }));
       minus.on('pointerout', () => minus.setStyle({ backgroundColor: '#444444' }));
       popup.add(minus);
 
-      const valueText = this.add.text(ctrlX + btnW + gap + valW / 2, y + 3 * UI_SCALE, getValue(), {
-        font: 'bold ${13 * UI_SCALE}px Arial',
+      const valueText = this.add.text(ctrlX + btnW + gap + valW / 2, y + padPx(3), getValue(), {
+        font: `bold ${fontPx(13)}px Arial`,
         color: '#ffffff'
       }).setOrigin(0.5, 0);
       popup.add(valueText);
       this.popupUpdaters.push({ text: valueText, getValue });
 
       const plus = this.add.text(ctrlX + btnW + gap + valW + gap, y, '+', {
-        font: '${15 * UI_SCALE}px Arial',
+        font: `${fontPx(14)}px Arial`,
         color: '#88ff88',
         backgroundColor: '#444444',
-        padding: { x: 9 * UI_SCALE, y: 3 * UI_SCALE }
+        padding: { x: padPx(9), y: padPx(3) }
       }).setInteractive({ useHandCursor: true });
       plus.on('pointerdown', () => { plusCb(); this.updatePopupValues(); });
       plus.on('pointerover', () => plus.setStyle({ backgroundColor: '#666666' }));
@@ -991,33 +991,33 @@ export class GameScene extends Phaser.Scene {
     );
 
     // Кнопки сброса (в одну строку): силы и параметры генерации
-    const rstY = y + 4 * UI_SCALE;
+    const rstY = y + padPx(4);
     const btnHw = (panelWidth - 28 - 8) / 2;
 
     const makeReset = (x: number, w: number, label: string, cb: () => void): void => {
       const bg = this.add.graphics();
       bg.fillStyle(0x444444, 1);
-      bg.fillRoundedRect(x, rstY, w, 22 * UI_SCALE, 6 * UI_SCALE);
+      bg.fillRoundedRect(x, rstY, w, fontPx(24), padPx(6));
       popup.add(bg);
 
-      const label_ = this.add.text(x + w / 2, rstY + 11 * UI_SCALE, label, {
-        font: 'bold ${11 * UI_SCALE}px Arial',
+      const label_ = this.add.text(x + w / 2, rstY + fontPx(12), label, {
+        font: `bold ${fontPx(12)}px Arial`,
         color: '#dddddd'
       }).setOrigin(0.5);
       popup.add(label_);
 
-      const zone = this.add.zone(x, rstY, w, 22 * UI_SCALE).setOrigin(0, 0)
+      const zone = this.add.zone(x, rstY, w, fontPx(24)).setOrigin(0, 0)
         .setInteractive({ useHandCursor: true });
       zone.on('pointerdown', cb);
       popup.add(zone);
     };
 
-    makeReset(px + 14 * UI_SCALE, btnHw, 'Сброс сил', () => {
+    makeReset(px + padPx(14), btnHw, 'Сброс сил', () => {
       Object.assign(GameConfig.enemies.fluid, FLUID_DEFAULTS);
       this.updatePopupValues();
       this.syncFluidParams();
     });
-    makeReset(px + 14 * UI_SCALE + btnHw + 8 * UI_SCALE, btnHw, 'Сброс генерации', () => {
+    makeReset(px + padPx(22), btnHw, 'Сброс генерации', () => {
       this.genDensity = 1.1;
       this.genBlobScale = 0.3;
       this.updatePopupValues();
@@ -1026,19 +1026,19 @@ export class GameScene extends Phaser.Scene {
     y += rowHeight;
 
     // Кнопка генерации нового уровня
-    const genY = y + 6 * UI_SCALE;
+    const genY = y + padPx(6);
     const genBg = this.add.graphics();
     genBg.fillStyle(0x2e7d32, 1);
-    genBg.fillRoundedRect(px + 14 * UI_SCALE, genY, panelWidth - 28 * UI_SCALE, 34 * UI_SCALE, 8 * UI_SCALE);
+    genBg.fillRoundedRect(px + padPx(14), genY, panelWidth - padPx(28), fontPx(38), padPx(8));
     popup.add(genBg);
 
-    const genLabel = this.add.text(px + panelWidth / 2, genY + 17, 'Сгенерировать уровень', {
-      font: 'bold ${14 * UI_SCALE}px Arial',
+    const genLabel = this.add.text(px + panelWidth / 2, genY + fontPx(19), 'Сгенерировать уровень', {
+      font: `bold ${fontPx(14)}px Arial`,
       color: '#ffffff'
     }).setOrigin(0.5);
     popup.add(genLabel);
 
-    const genZone = this.add.zone(px + 14 * UI_SCALE, genY, panelWidth - 28 * UI_SCALE, 34 * UI_SCALE).setOrigin(0, 0)
+    const genZone = this.add.zone(px + padPx(14), genY, panelWidth - padPx(28), fontPx(38)).setOrigin(0, 0)
       .setInteractive({ useHandCursor: true });
     genZone.on('pointerdown', () => { this.regenerateLevelWithNewSeed(); });
     popup.add(genZone);
