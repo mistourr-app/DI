@@ -941,14 +941,14 @@ export class GameScene extends Phaser.Scene {
 
     // --- Параметры генерации уровня: пересборка на лету с тем же seed ---
     addRow('Плотность препятствий',
-      () => { this.genDensity = Math.max(0.05, +(this.genDensity - 0.05).toFixed(2)); this.generateLevel(); },
-      () => { this.genDensity = Math.min(0.95, +(this.genDensity + 0.05).toFixed(2)); this.generateLevel(); },
+      () => { this.genDensity = Math.max(0.01, +(this.genDensity - 0.05).toFixed(2)); this.generateLevel(); },
+      () => { this.genDensity = Math.min(1, +(this.genDensity + 0.05).toFixed(2)); this.generateLevel(); },
       () => this.genDensity.toFixed(2)
     );
 
     addRow('Размер структур',
-      () => { this.genBlobScale = Math.max(0.6, +(this.genBlobScale - 0.1).toFixed(1)); this.generateLevel(); },
-      () => { this.genBlobScale = Math.min(2, +(this.genBlobScale + 0.1).toFixed(1)); this.generateLevel(); },
+      () => { this.genBlobScale = Math.max(0.3, +(this.genBlobScale - 0.1).toFixed(1)); this.generateLevel(); },
+      () => { this.genBlobScale = Math.min(3, +(this.genBlobScale + 0.1).toFixed(1)); this.generateLevel(); },
       () => `x${this.genBlobScale.toFixed(1)}`
     );
 

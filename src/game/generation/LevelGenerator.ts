@@ -124,8 +124,8 @@ export class LevelGenerator {
     const width = Math.max(200, Math.floor(params.width));
     const height = Math.max(300, Math.floor(params.height));
     const passageWidth = clamp(params.passageWidth ?? 60, 24, 200);
-    const density = clamp(params.obstacleDensity ?? 0.4, 0.05, 0.95);
-    const blobScale = clamp(params.blobScale ?? 1, 0.5, 3);
+    const density = clamp(params.obstacleDensity ?? 0.4, 0.01, 1);
+    const blobScale = clamp(params.blobScale ?? 1, 0.3, 4);
     const bottomMargin = clamp(height * BOTTOM_FREE_RATIO, CELL * 2, height * 0.25);
 
     const cols = Math.ceil(width / CELL);

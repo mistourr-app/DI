@@ -353,6 +353,9 @@ export function blockedAt(field: CollisionField, lx: number, ly: number): boolea
   const cx = Math.floor(lx / field.cellSize);
   const cy = Math.floor(ly / field.cellSize);
   if (cx < 0 || cy < 0 || cx >= field.cols || cy >= field.rows) return false;
+  // Фантомная полоса справа: сетка шире реального поля (cols*cell > widthPx).
+  // Препятствия там невидимы для игрока — коллизией не считаем
+  if (field.widthPx !== undefined && lx >= field.widthPx) return false;
   return field.blocked[cy * field.cols + cx] === 1;
 }
 
