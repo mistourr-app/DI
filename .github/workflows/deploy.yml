@@ -17,6 +17,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Puppeteer нужен только для будущих e2e-тестов, не для сборки:
+      # пропуск скачивания Chromium экономит 2-4 минуты
+      PUPPETEER_SKIP_DOWNLOAD: true
+      PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: true
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +30,8 @@ jobs:
           node-version: 20
           cache: npm
 
-      - run: npm ci
+      # Устанавливаем только то, что нужно для сборки
+      - run: npm ci --ignore-scripts
 
       - run: npm run build
 
