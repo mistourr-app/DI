@@ -3,14 +3,15 @@ import { LevelGenerator } from '../game/generation/LevelGenerator';
 import { FluidSimulationController, type FrameInfo } from '../game/fluid/FluidSimulationController';
 import { OUT_STRIDE, type FluidParams } from '../game/fluid/fluidProtocol';
 import { GameConfig } from '../game/config/GameConfig';
+import { UI_SCALE } from '../game/Game';
 
 // Радиус круга в текстуре 'enemy' (SVG 20x20, circle r=8) — для масштабирования
 const ENEMY_TEX_RADIUS = 8;
 // Период обновления дебаг-текста, мс (setText растеризует текстуру — нельзя каждый кадр)
 const DEBUG_TEXT_INTERVAL = 250;
-// Границы адаптивного кегля дебаг-панели
-const DEBUG_FONT_MAX = 16;
-const DEBUG_FONT_MIN = 9;
+// Границы адаптивного кегля дебаг-панели (в игровых px = css * UI_SCALE)
+const DEBUG_FONT_MAX = Math.round(16 * UI_SCALE);
+const DEBUG_FONT_MIN = Math.round(9 * UI_SCALE);
 // Заводские множители сил жидкости — для кнопки сброса слайдеров
 const FLUID_DEFAULTS = { ...GameConfig.enemies.fluid };
 
@@ -150,8 +151,8 @@ export class GameScene extends Phaser.Scene {
   private buildFluidParams(): FluidParams {
     const f = GameConfig.enemies.fluid;
     return {
-      targetSpeed: this.enemySpeed,
-      enemyRadius: this.enemySize,
+      targetSpeed: this.enemySpeed * UI_SCALE,
+      enemyRadius: this.enemySize * UI_SCALE,
       density: f.density,
       pressure: f.pressure,
       viscosity: f.viscosity,
@@ -284,7 +285,7 @@ export class GameScene extends Phaser.Scene {
 
     // 5. Разделительная линия между полем боя и базой
     const divider = this.add.graphics();
-    divider.lineStyle(1, 0x00ffff, 0.3);
+    divider.lineStyle(1 * UI_SCALE, 0x00ffff, 0.3);
     divider.beginPath();
     divider.moveTo(this.baseZone.x, this.baseZone.y);
     divider.lineTo(this.baseZone.x + this.baseZone.width, this.baseZone.y);
@@ -295,11 +296,11 @@ export class GameScene extends Phaser.Scene {
     // База в центре зоны базы
     const baseX = this.baseZone.x + this.baseZone.width / 2;
     const baseY = this.baseZone.y + this.baseZone.height / 2;
-    
+
     // Адаптивный размер базы
     const baseSize = Math.min(this.baseZone.width, this.baseZone.height) * 0.2;
-    const fontSize = Math.max(16, baseSize * 0.4);
-    
+    const fontSize = Math.max(16 * UI_SCALE, baseSize * 0.4);
+
     this.base = this.add.rectangle(
       baseX,
       baseY,
@@ -307,14 +308,14 @@ export class GameScene extends Phaser.Scene {
       baseSize,
       0x00ffff
     );
-    this.base.setStrokeStyle(3, 0xffffff);
-    
+    this.base.setStrokeStyle(3 * UI_SCALE, 0xffffff);
+
     // Текст "БАЗА"
     const baseText = this.add.text(baseX, baseY, 'БАЗА', {
       font: `${fontSize}px Arial`,
       color: '#ffffff',
       stroke: '#000000',
-      strokeThickness: 3
+      strokeThickness: 3 * UI_SCALE
     });
     baseText.setOrigin(0.5);
   }
@@ -334,13 +335,13 @@ export class GameScene extends Phaser.Scene {
     ];
     
     // Адаптивный размер элементов в зависимости от ширины зоны
-    const baseElementSize = Math.min(zone.width / 8, 50); // Максимум 50px
+    const baseElementSize = Math.min(zone.width / 8, 50 * UI_SCALE); // Максимум 50 css px
     const elementSpacing = baseElementSize * 1.5;
     const elementRadius = baseElementSize / 2;
-    
+
     // Адаптивный размер шрифта
-    const fontSize = Math.max(14, baseElementSize * 0.5);
-    const labelFontSize = Math.max(10, baseElementSize * 0.3);
+    const fontSize = Math.max(14 * UI_SCALE, baseElementSize * 0.5);
+    const labelFontSize = Math.max(10 * UI_SCALE, baseElementSize * 0.3);
     
     elements.forEach(element => {
       const elementX = centerX + (element.offset * elementSpacing);
@@ -351,17 +352,17 @@ export class GameScene extends Phaser.Scene {
       
       // Круг стихии
       const elementCircle = this.add.circle(elementX, elementY, elementRadius, element.color);
-      elementCircle.setStrokeStyle(2, 0xffffff);
-      
+      elementCircle.setStrokeStyle(2 * UI_SCALE, 0xffffff);
+
       // Эмодзи стихии
       const emoji = this.add.text(elementX, elementY, element.emoji, {
         font: `${fontSize}px Arial`,
         color: '#ffffff'
       });
       emoji.setOrigin(0.5);
-      
+
       // Название стихии
-      const nameLabel = this.add.text(elementX, elementY + elementRadius + 10, element.name, {
+      const nameLabel = this.add.text(elementX, elementY + elementRadius + 10 * UI_SCALE, element.name, {
         font: `${labelFontSize}px Arial`,
         color: '#cccccc',
         align: 'center'
@@ -381,10 +382,10 @@ export class GameScene extends Phaser.Scene {
   
   private createDebugText(): void {
     this.debugText = this.add.text(0, 0, '', {
-      font: '16px monospace',
+      font: `${12 * UI_SCALE}px monospace`,
       color: '#ffffff',
       backgroundColor: '#00000080',
-      padding: { x: 8, y: 4 }
+      padding: { x: 8 * UI_SCALE, y: 4 * UI_SCALE }
     });
     // Поднимаем текст на максимальный depth, чтобы был выше всех монстров
     this.debugText.setDepth(1000);
@@ -395,7 +396,7 @@ export class GameScene extends Phaser.Scene {
    *  Кегль адаптивный: строка + кнопка ⚙ обязаны помещаться в ширину поля */
   private placeDebugText(): void {
     if (!this.debugText || !this.gameArea) return;
-    this.debugText.setPosition(this.gameArea.x + 8, this.gameArea.y + 4);
+    this.debugText.setPosition(this.gameArea.x + 8 * UI_SCALE, this.gameArea.y + 4 * UI_SCALE);
 
     // Самая длинная строка панели ~38 символов; моноширинный глиф ~0.62 кегля
     const avail = this.gameArea.width - 16 - 52;
@@ -408,7 +409,7 @@ export class GameScene extends Phaser.Scene {
         font: `${size}px monospace`,
         color: '#ffffff',
         backgroundColor: '#00000080',
-        padding: { x: 8, y: 4 }
+        padding: { x: 8 * UI_SCALE, y: 4 * UI_SCALE }
       });
     }
   }
@@ -417,7 +418,7 @@ export class GameScene extends Phaser.Scene {
     // Враги спаунятся НАД верхней границей поля боя (выше экрана).
     // Блобы теперь начинаются от самой кромки — даём запас, чтобы
     // появление было видно до первого столкновения
-    const spawnY = this.battlefieldZone.y - 32;
+    const spawnY = this.battlefieldZone.y - 32 * UI_SCALE;
 
     // X: по очереди через ВСЕ входы уровня, равномерно на всю ширину входа.
     // ВНИМАНИЕ: entrances хранятся в ЛОКАЛЬНЫХ координатах поля боя,
@@ -434,14 +435,14 @@ export class GameScene extends Phaser.Scene {
       // Клэмп = коридору движения физики (EDGE_MARGIN=10 + запас):
       // иначе спавн у кромки телепортом слипается в колонну на стенке
       const localX = e.x + Phaser.Math.FloatBetween(-e.width / 2, e.width / 2);
-      x = zone.x + Phaser.Math.Clamp(localX, 14, zone.width - 14);
+      x = zone.x + Phaser.Math.Clamp(localX, 14 * UI_SCALE, zone.width - 14 * UI_SCALE);
     } else {
-      x = Phaser.Math.Between(zone.x + 20, zone.x + zone.width - 20);
+      x = Phaser.Math.Between(zone.x + 20 * UI_SCALE, zone.x + zone.width - 20 * UI_SCALE);
     }
-    
+
     const y = Phaser.Math.Between(
-      spawnY - 10,
-      spawnY + 10
+      spawnY - 10 * UI_SCALE,
+      spawnY + 10 * UI_SCALE
     );
 
     // Пул: переиспользуем «мёртвых» врагов вместо создания/уничтожения.
@@ -454,13 +455,13 @@ export class GameScene extends Phaser.Scene {
     } else {
       enemy.setPosition(x, y).setActive(true).setVisible(true);
     }
-    enemy.setScale(this.enemySize / ENEMY_TEX_RADIUS);
+    enemy.setScale((this.enemySize * UI_SCALE) / ENEMY_TEX_RADIUS);
     enemy.setAlpha(1);
 
     // Скорость — обычные свойства объекта (Data Manager заметно медленнее)
     const e = enemy as any;
-    e.vx = Phaser.Math.FloatBetween(-0.1, 0.1);
-    e.vy = this.enemySpeed;
+    e.vx = Phaser.Math.FloatBetween(-0.1, 0.1) * UI_SCALE;
+    e.vy = this.enemySpeed * UI_SCALE;
     e.aid = -1;
 
     // Регистрируем агента в воркере физики (координаты -> локальные поля боя)
@@ -470,7 +471,7 @@ export class GameScene extends Phaser.Scene {
         enemy.y - this.battlefieldZone.y,
         e.vx,
         e.vy,
-        this.enemySize
+        this.enemySize * UI_SCALE
       );
       if (id >= 0) {
         e.aid = id;
@@ -606,12 +607,12 @@ export class GameScene extends Phaser.Scene {
     const baseX = this.base.x;
     const baseY = this.base.y;
     const zone = this.battlefieldZone;
-    const targetSpeed = this.enemySpeed;
+    const targetSpeed = this.enemySpeed * UI_SCALE;
     const maxSpeed = targetSpeed * 1.05;
-    const minX = zone.x + 10;
-    const maxX = zone.x + zone.width - 10;
+    const minX = zone.x + 10 * UI_SCALE;
+    const maxX = zone.x + zone.width - 10 * UI_SCALE;
     // Радиус хитбокса монстра (меньше визуального — прощающая коллизия)
-    const hitR = Math.max(4, this.enemySize * 0.6);
+    const hitR = Math.max(4, this.enemySize * 0.6) * UI_SCALE;
     // Обычный for вместо forEach: без замыканий и накладных расходов итератора
     const children = this.enemies.getChildren() as any[];
 
@@ -628,8 +629,8 @@ export class GameScene extends Phaser.Scene {
       const dirY = distance > 0 ? dy / distance : 1;
 
       // Скорость к базе + минимальный шум
-      let nvx = dirX * targetSpeed + Phaser.Math.FloatBetween(-0.01, 0.01);
-      let nvy = dirY * targetSpeed + Phaser.Math.FloatBetween(-0.01, 0.01);
+      let nvx = dirX * targetSpeed + Phaser.Math.FloatBetween(-0.01, 0.01) * UI_SCALE;
+      let nvy = dirY * targetSpeed + Phaser.Math.FloatBetween(-0.01, 0.01) * UI_SCALE;
 
       const speed = Math.sqrt(nvx * nvx + nvy * nvy);
       if (speed > maxSpeed) {
@@ -641,8 +642,8 @@ export class GameScene extends Phaser.Scene {
       // на спавн вместо копания вверх сквозь препятствия
       if (this.isBlockedWorld(enemy.x, enemy.y)) {
         enemy.setPosition(
-          Phaser.Math.Between(zone.x + 20, zone.x + zone.width - 20),
-          this.battlefieldZone.y - Phaser.Math.Between(20, 30)
+          Phaser.Math.Between(zone.x + 20 * UI_SCALE, zone.x + zone.width - 20 * UI_SCALE),
+          this.battlefieldZone.y - Phaser.Math.Between(20, 30) * UI_SCALE
         );
         enemy.vx = 0;
         enemy.vy = targetSpeed;
@@ -708,17 +709,17 @@ export class GameScene extends Phaser.Scene {
       this.cameras.main.centerY,
       'GAME OVER!',
       {
-        font: '48px Arial',
+        font: '${48 * UI_SCALE}px Arial',
         color: '#ff0000',
         stroke: '#000000',
-        strokeThickness: 4
+        strokeThickness: 4 * UI_SCALE
       }
     );
     gameOverText.setOrigin(0.5);
   }
   
   private createHitEffect(x: number, y: number): void {
-    const effect = this.add.circle(x, y, 20, 0xffff00);
+    const effect = this.add.circle(x, y, 20 * UI_SCALE, 0xffff00);
     effect.setAlpha(0.7);
     
     this.tweens.add({
@@ -777,12 +778,12 @@ export class GameScene extends Phaser.Scene {
     // игровой области: правый верхний угол поля боя
     const ga = this.gameArea;
     const btn = this.add.text(0, 0, '⚙', {
-      font: '22px Arial',
+      font: `${22 * UI_SCALE}px Arial`,
       color: '#ffffff',
       backgroundColor: '#333333',
-      padding: { x: 10, y: 6 }
+      padding: { x: 10 * UI_SCALE, y: 6 * UI_SCALE }
     }).setScrollFactor(0).setDepth(1000).setInteractive({ useHandCursor: true });
-    btn.setPosition(ga.x + ga.width - btn.width - 10, ga.y + 4);
+    btn.setPosition(ga.x + ga.width - btn.width - 10 * UI_SCALE, ga.y + 4 * UI_SCALE);
     btn.on('pointerdown', () => { this.toggleSettingsPopup(); });
     btn.on('pointerover', () => btn.setStyle({ backgroundColor: '#555555' }));
     btn.on('pointerout', () => btn.setStyle({ backgroundColor: '#333333' }));
@@ -817,15 +818,15 @@ export class GameScene extends Phaser.Scene {
     const screenWidth = this.cameras.main.width;
     const screenHeight = this.cameras.main.height;
 
-    const panelWidth = Math.min(300, screenWidth * 0.85);
-    const headerH = 40;
-    const rowHeight = 30;
-    const genBtnH = 46;
-    const padBottom = 16;
+    const panelWidth = Math.min(300 * UI_SCALE, screenWidth * 0.85);
+    const headerH = 40 * UI_SCALE;
+    const rowHeight = 30 * UI_SCALE;
+    const genBtnH = 46 * UI_SCALE;
+    const padBottom = 16 * UI_SCALE;
     // 5 параметров спавна + 2 генерации + 4 силы + строка сбросов
     const panelHeight = headerH + 12 * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
-    const py = Math.round(Math.max(20, screenHeight * 0.06));
+    const py = Math.round(Math.max(20 * UI_SCALE, screenHeight * 0.06));
 
     const popup = this.add.container(0, 0).setScrollFactor(0).setDepth(1200);
     this.settingsPopup = popup;
@@ -833,23 +834,23 @@ export class GameScene extends Phaser.Scene {
     // Фон поп-апа
     const bg = this.add.graphics();
     bg.fillStyle(0x101822, 0.96);
-    bg.fillRoundedRect(px, py, panelWidth, panelHeight, 12);
-    bg.lineStyle(2, 0x4a90d9, 1);
+    bg.fillRoundedRect(px, py, panelWidth, panelHeight, 12 * UI_SCALE);
+    bg.lineStyle(2 * UI_SCALE, 0x4a90d9, 1);
     bg.strokeRoundedRect(px, py, panelWidth, panelHeight, 12);
     popup.add(bg);
 
     // Заголовок
     popup.add(this.add.text(px + 16, py + 11, 'НАСТРОЙКИ', {
-      font: 'bold 15px Arial',
+      font: 'bold ${15 * UI_SCALE}px Arial',
       color: '#ffffff'
     }));
 
     // Кнопка закрытия
     const closeBtn = this.add.text(px + panelWidth - 38, py + 8, '✕', {
-      font: 'bold 16px Arial',
+      font: 'bold ${16 * UI_SCALE}px Arial',
       color: '#ff6666',
       backgroundColor: '#333333',
-      padding: { x: 8, y: 2 }
+      padding: { x: 8 * UI_SCALE, y: 2 * UI_SCALE }
     }).setInteractive({ useHandCursor: true });
     closeBtn.on('pointerdown', () => { this.closeSettingsPopup(); });
     closeBtn.on('pointerover', () => closeBtn.setStyle({ backgroundColor: '#555555' }));
@@ -858,11 +859,11 @@ export class GameScene extends Phaser.Scene {
 
     // Строки контролов: метка параметра слева, [-] значение [+]+ справа
     let y = py + headerH;
-    const btnW = 26;
-    const valW = 56;
-    const gap = 4;
+    const btnW = 26 * UI_SCALE;
+    const valW = 56 * UI_SCALE;
+    const gap = 4 * UI_SCALE;
     const ctrlBlockW = btnW * 2 + valW + gap * 2;
-    const x0 = px + 14;
+    const x0 = px + 14 * UI_SCALE;
 
     const addRow = (label: string,
       minusCb: () => void,
@@ -870,37 +871,37 @@ export class GameScene extends Phaser.Scene {
       getValue: () => string): void => {
 
       // Название параметра (что он делает) — слева
-      popup.add(this.add.text(x0, y + 3, label, {
-        font: '12px Arial',
+      popup.add(this.add.text(x0, y + 3 * UI_SCALE, label, {
+        font: '${12 * UI_SCALE}px Arial',
         color: '#bbbbbb'
       }));
 
       // Блок управления прижат к правому краю панели
-      const ctrlX = px + panelWidth - 14 - ctrlBlockW;
+      const ctrlX = px + panelWidth - 14 * UI_SCALE - ctrlBlockW;
 
       const minus = this.add.text(ctrlX, y, '-', {
-        font: '15px Arial',
+        font: '${15 * UI_SCALE}px Arial',
         color: '#ff6666',
         backgroundColor: '#444444',
-        padding: { x: 9, y: 3 }
+        padding: { x: 9 * UI_SCALE, y: 3 * UI_SCALE }
       }).setInteractive({ useHandCursor: true });
       minus.on('pointerdown', () => { minusCb(); this.updatePopupValues(); });
       minus.on('pointerover', () => minus.setStyle({ backgroundColor: '#666666' }));
       minus.on('pointerout', () => minus.setStyle({ backgroundColor: '#444444' }));
       popup.add(minus);
 
-      const valueText = this.add.text(ctrlX + btnW + gap + valW / 2, y + 3, getValue(), {
-        font: 'bold 13px Arial',
+      const valueText = this.add.text(ctrlX + btnW + gap + valW / 2, y + 3 * UI_SCALE, getValue(), {
+        font: 'bold ${13 * UI_SCALE}px Arial',
         color: '#ffffff'
       }).setOrigin(0.5, 0);
       popup.add(valueText);
       this.popupUpdaters.push({ text: valueText, getValue });
 
       const plus = this.add.text(ctrlX + btnW + gap + valW + gap, y, '+', {
-        font: '15px Arial',
+        font: '${15 * UI_SCALE}px Arial',
         color: '#88ff88',
         backgroundColor: '#444444',
-        padding: { x: 9, y: 3 }
+        padding: { x: 9 * UI_SCALE, y: 3 * UI_SCALE }
       }).setInteractive({ useHandCursor: true });
       plus.on('pointerdown', () => { plusCb(); this.updatePopupValues(); });
       plus.on('pointerover', () => plus.setStyle({ backgroundColor: '#666666' }));
@@ -990,33 +991,33 @@ export class GameScene extends Phaser.Scene {
     );
 
     // Кнопки сброса (в одну строку): силы и параметры генерации
-    const rstY = y + 4;
+    const rstY = y + 4 * UI_SCALE;
     const btnHw = (panelWidth - 28 - 8) / 2;
 
     const makeReset = (x: number, w: number, label: string, cb: () => void): void => {
       const bg = this.add.graphics();
       bg.fillStyle(0x444444, 1);
-      bg.fillRoundedRect(x, rstY, w, 22, 6);
+      bg.fillRoundedRect(x, rstY, w, 22 * UI_SCALE, 6 * UI_SCALE);
       popup.add(bg);
 
-      const label_ = this.add.text(x + w / 2, rstY + 11, label, {
-        font: 'bold 11px Arial',
+      const label_ = this.add.text(x + w / 2, rstY + 11 * UI_SCALE, label, {
+        font: 'bold ${11 * UI_SCALE}px Arial',
         color: '#dddddd'
       }).setOrigin(0.5);
       popup.add(label_);
 
-      const zone = this.add.zone(x, rstY, w, 22).setOrigin(0, 0)
+      const zone = this.add.zone(x, rstY, w, 22 * UI_SCALE).setOrigin(0, 0)
         .setInteractive({ useHandCursor: true });
       zone.on('pointerdown', cb);
       popup.add(zone);
     };
 
-    makeReset(px + 14, btnHw, 'Сброс сил', () => {
+    makeReset(px + 14 * UI_SCALE, btnHw, 'Сброс сил', () => {
       Object.assign(GameConfig.enemies.fluid, FLUID_DEFAULTS);
       this.updatePopupValues();
       this.syncFluidParams();
     });
-    makeReset(px + 14 + btnHw + 8, btnHw, 'Сброс генерации', () => {
+    makeReset(px + 14 * UI_SCALE + btnHw + 8 * UI_SCALE, btnHw, 'Сброс генерации', () => {
       this.genDensity = 1.1;
       this.genBlobScale = 0.3;
       this.updatePopupValues();
@@ -1025,19 +1026,19 @@ export class GameScene extends Phaser.Scene {
     y += rowHeight;
 
     // Кнопка генерации нового уровня
-    const genY = y + 6;
+    const genY = y + 6 * UI_SCALE;
     const genBg = this.add.graphics();
     genBg.fillStyle(0x2e7d32, 1);
-    genBg.fillRoundedRect(px + 14, genY, panelWidth - 28, 34, 8);
+    genBg.fillRoundedRect(px + 14 * UI_SCALE, genY, panelWidth - 28 * UI_SCALE, 34 * UI_SCALE, 8 * UI_SCALE);
     popup.add(genBg);
 
     const genLabel = this.add.text(px + panelWidth / 2, genY + 17, 'Сгенерировать уровень', {
-      font: 'bold 14px Arial',
+      font: 'bold ${14 * UI_SCALE}px Arial',
       color: '#ffffff'
     }).setOrigin(0.5);
     popup.add(genLabel);
 
-    const genZone = this.add.zone(px + 14, genY, panelWidth - 28, 34).setOrigin(0, 0)
+    const genZone = this.add.zone(px + 14 * UI_SCALE, genY, panelWidth - 28 * UI_SCALE, 34 * UI_SCALE).setOrigin(0, 0)
       .setInteractive({ useHandCursor: true });
     genZone.on('pointerdown', () => { this.regenerateLevelWithNewSeed(); });
     popup.add(genZone);
@@ -1049,7 +1050,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Применяет новый размер ко всем живым врагам (событийно, не каждый кадр) */
   private applyEnemySizeToAll(): void {
-    const s = this.enemySize / ENEMY_TEX_RADIUS;
+    const s = (this.enemySize * UI_SCALE) / ENEMY_TEX_RADIUS;
     const children = this.enemies.getChildren();
     for (let i = 0; i < children.length; i++) {
       (children[i] as any).setScale(s);
@@ -1079,12 +1080,12 @@ export class GameScene extends Phaser.Scene {
   }
   
   private createTapEffect(x: number, y: number): void {
-    const circle1 = this.add.circle(x, y, 10, 0x00ffff, 0.5);
-    const circle2 = this.add.circle(x, y, 5, 0xffffff, 0.7);
+    const circle1 = this.add.circle(x, y, 10 * UI_SCALE, 0x00ffff, 0.5);
+    const circle2 = this.add.circle(x, y, 5 * UI_SCALE, 0xffffff, 0.7);
     
     this.tweens.add({
       targets: circle1,
-      radius: 40,
+      radius: 40 * UI_SCALE,
       alpha: 0,
       duration: 400,
       ease: 'Power2',
@@ -1093,7 +1094,7 @@ export class GameScene extends Phaser.Scene {
     
     this.tweens.add({
       targets: circle2,
-      radius: 20,
+      radius: 20 * UI_SCALE,
       alpha: 0,
       duration: 300,
       ease: 'Power2',

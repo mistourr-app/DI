@@ -1,29 +1,33 @@
 import Phaser from 'phaser';
 import { GameScene } from '../scenes/GameScene';
 
+/**
+ * Масштаб рендера: канвас рисуется в ФИЗИЧЕСКИХ пикселях устройства
+ * (иначе на HiDPI-экранах всё размыто), а отображается в CSS-пикселях
+ * через zoom = 1/UI_SCALE. Все игровые координаты становятся «плотными»,
+ * UI-константы сцены умножаются на UI_SCALE для сохранения пропорций.
+ */
+export const UI_SCALE: number = Math.min(window.devicePixelRatio || 1, 2);
+
 export class Game {
   private phaserGame: Phaser.Game | null = null;
 
   async start(): Promise<void> {
+    const w = Math.max(1, Math.round(window.innerWidth * UI_SCALE));
+    const h = Math.max(1, Math.round(window.innerHeight * UI_SCALE));
+
     const config: Phaser.Types.Core.GameConfig = {
       type: Phaser.WEBGL,
       parent: 'game-container',
-      width: '100%',
-      height: '100%',
+      width: w,
+      height: h,
+      zoom: 1 / UI_SCALE,
       backgroundColor: '#000000',
       scale: {
-        mode: Phaser.Scale.RESIZE,
+        mode: Phaser.Scale.NONE,
         autoCenter: Phaser.Scale.CENTER_BOTH,
-        width: '100%',
-        height: '100%',
-        min: {
-          width: 300,
-          height: 500
-        },
-        max: {
-          width: 1920,
-          height: 1080
-        }
+        width: w,
+        height: h
       },
       scene: [GameScene],
       physics: {
@@ -39,9 +43,23 @@ export class Game {
     };
 
     this.phaserGame = new Phaser.Game(config);
+    window.addEventListener('resize', this.handleWindowResize);
   }
 
+  /** Ручной ресайз: режим NONE не следит за окном сам */
+  private handleWindowResize = (): void => {
+    const g = this.phaserGame;
+    if (!g) return;
+    g.scale.resize(
+      Math.max(1, Math.round(window.innerWidth * UI_SCALE)),
+      Math.max(1, Math.round(window.innerHeight * UI_SCALE))
+    );
+    g.scale.setZoom(1 / UI_SCALE);
+    g.scale.refresh();
+  };
+
   stop(): void {
+    window.removeEventListener('resize', this.handleWindowResize);
     if (this.phaserGame) {
       this.phaserGame.destroy(true);
       this.phaserGame = null;
