@@ -106,7 +106,7 @@ export class GodPowerIcon {
     const p = this.system.progress;
     if (p <= 0 || r <= 0) return;
 
-    g.fillStyle(COLOR_FILL, 0.9);
+    g.fillStyle(COLOR_FILL, 1);
     if (p >= 1) {
       g.fillCircle(this.cx, this.cy, r);
       return;

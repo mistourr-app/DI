@@ -30,10 +30,11 @@ export class GameScene extends Phaser.Scene {
   private baseZoneGraphics!: Phaser.GameObjects.Graphics;
   
   // Настройки спавна врагов
-  private totalEnemiesToSpawn: number = 25000;  // Общее количество монстров для спавна
+  private totalEnemiesToSpawn: number = 100;   // Монстров на уровне (условие победы)
   private enemiesSpawned: number = 0;        // Сколько уже заспавнено
   private maxEnemiesOnScreen: number = 1000;   // Максимум на экране
   private enemyCount: number = 0;           // Текущее количество на экране
+  private victoryShown: boolean = false;     // Экран победы показан
   
   // Здоровье базы
   private baseHealth: number = 1000;        // Начальное здоровье базы
@@ -105,6 +106,7 @@ export class GameScene extends Phaser.Scene {
     this.enemiesSpawned = 0;
     this.baseHealth = this.baseMaxHealth;
     this.spawnTimer = 0;
+    this.victoryShown = false;
 
     // Fluid simulation: воркер физики толпы (fallback — main-thread путь)
     this.fluidCtrl = new FluidSimulationController();
@@ -579,6 +581,15 @@ export class GameScene extends Phaser.Scene {
 
     // Обновляем debug информацию
     this.updateDebugInfo();
+
+    // Условие победы: все монстры уровня заспавнены и поле чисто
+    // (дошедшие до базы сняли HP, но убить их уже нельзя — они не в счёт)
+    if (!this.victoryShown &&
+        this.enemiesSpawned >= this.totalEnemiesToSpawn &&
+        this.enemyCount === 0) {
+      this.victoryShown = true;
+      this.showVictory();
+    }
   }
 
   /**
@@ -725,6 +736,21 @@ export class GameScene extends Phaser.Scene {
     );
     gameOverText.setOrigin(0.5);
   }
+
+  private showVictory(): void {
+    const victoryText = this.add.text(
+      this.cameras.main.centerX,
+      this.cameras.main.centerY,
+      'ПОБЕДА!',
+      {
+        font: `${48 * UI_SCALE}px Arial`,
+        color: '#ffd700',
+        stroke: '#000000',
+        strokeThickness: 4 * UI_SCALE
+      }
+    );
+    victoryText.setOrigin(0.5).setDepth(1100);
+  }
   
   private createHitEffect(x: number, y: number): void {
     const effect = this.add.circle(x, y, 20 * UI_SCALE, 0xffff00);
@@ -831,8 +857,8 @@ export class GameScene extends Phaser.Scene {
     const rowHeight = fontPx(34);
     const genBtnH = fontPx(48);
     const padBottom = padPx(16);
-    // 5 параметров спавна + 2 генерации + 4 силы + 3 силы бога + строка сбросов
-    const panelHeight = headerH + 15 * rowHeight + genBtnH + padBottom;
+    // 5 параметров спавна + 2 генерации + 2 силы бога + строка сбросов
+    const panelHeight = headerH + 10 * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(padPx(20), screenHeight * 0.06));
 
@@ -926,12 +952,11 @@ export class GameScene extends Phaser.Scene {
       () => `${this.spawnInterval}`
     );
 
-    // Общее число монстров за уровень (шаг растёт с величиной — до 100k без ста кликов)
-    const totalStep = this.totalEnemiesToSpawn >= 10000 ? 1000 : 100;
-    addRow('Всего монстров, тыс.',
-      () => { this.totalEnemiesToSpawn = Math.max(100, this.totalEnemiesToSpawn - totalStep); },
-      () => { this.totalEnemiesToSpawn += totalStep; },
-      () => `${Math.floor(this.totalEnemiesToSpawn / 1000)}K`
+    // Монстры уровня: победа при полной зачистке (шаг 100 — ГДД/запрос)
+    addRow('Монстров на уровне',
+      () => { this.totalEnemiesToSpawn = Math.max(100, this.totalEnemiesToSpawn - 100); },
+      () => { this.totalEnemiesToSpawn = Math.min(100000, this.totalEnemiesToSpawn + 100); },
+      () => `${this.totalEnemiesToSpawn}`
     );
 
     // Одновременный лимит живых монстров (потолок = ёмкость физики)
@@ -968,38 +993,11 @@ export class GameScene extends Phaser.Scene {
       () => `x${this.genBlobScale.toFixed(1)}`
     );
 
-    // --- Силы жидкости: тюнинг в реальном времени (мутаторы GameConfig -> syncFluidParams) ---
-    const F = GameConfig.enemies.fluid;
-
-    // Разлетаются ли монстры при сближении (анти-стопки)
-    addRow('Расталкивание',
-      () => { F.separation = Math.max(0, +(F.separation - 0.25).toFixed(2)); this.syncFluidParams(); },
-      () => { F.separation = Math.min(6, +(F.separation + 0.25).toFixed(2)); this.syncFluidParams(); },
-      () => F.separation.toFixed(2)
-    );
-
-    // Распирание плотных мест толпы
-    addRow('Давление в толпе',
-      () => { F.pressure = Math.max(0, +(F.pressure - 0.05).toFixed(2)); this.syncFluidParams(); },
-      () => { F.pressure = Math.min(2, +(F.pressure + 0.05).toFixed(2)); this.syncFluidParams(); },
-      () => F.pressure.toFixed(2)
-    );
-
-    // Согласованность движения, гладкость потока
-    addRow('Вязкость потока',
-      () => { F.viscosity = Math.max(0, +(F.viscosity - 0.001).toFixed(3)); this.syncFluidParams(); },
-      () => { F.viscosity = Math.min(0.05, +(F.viscosity + 0.001).toFixed(3)); this.syncFluidParams(); },
-      () => F.viscosity.toFixed(3)
-    );
-
-    // Держатся ли рукава потока вместе
-    addRow('Сплочённость потока',
-      () => { F.cohesion = Math.max(0, +(F.cohesion - 0.1).toFixed(2)); this.syncFluidParams(); },
-      () => { F.cohesion = Math.min(3, +(F.cohesion + 0.1).toFixed(2)); this.syncFluidParams(); },
-      () => F.cohesion.toFixed(2)
-    );
+    // --- Силы жидкости: в конфиге (GameConfig.enemies.fluid), из поп-апа
+    // убраны как перегруз UI; тюнинг — через код/«Сброс сил» ---
 
     // --- Супер сила бога: балансные параметры (ГДД 2.5) ---
+    // superChargeRequired тоже в конфиге (из поп-апа убран)
     const G = GameConfig.godPower;
 
     addRow('Убийств за молнию',
@@ -1012,20 +1010,6 @@ export class GameScene extends Phaser.Scene {
       () => { G.superRadius = Math.max(40, G.superRadius - 10); },
       () => { G.superRadius = Math.min(400, G.superRadius + 10); },
       () => `${G.superRadius}`
-    );
-
-    addRow('Заряд для супер',
-      () => {
-        G.superChargeRequired = Math.max(5, G.superChargeRequired - 5);
-        this.godPower.onBalanceChanged();
-        this.godIcon?.redraw();
-      },
-      () => {
-        G.superChargeRequired = Math.min(500, G.superChargeRequired + 5);
-        this.godPower.onBalanceChanged();
-        this.godIcon?.redraw();
-      },
-      () => `${G.superChargeRequired}`
     );
 
     // Кнопки сброса (в одну строку): силы и параметры генерации
