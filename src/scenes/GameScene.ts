@@ -3,7 +3,7 @@ import { LevelGenerator } from '../game/generation/LevelGenerator';
 import { FluidSimulationController, type FrameInfo } from '../game/fluid/FluidSimulationController';
 import { OUT_STRIDE, type FluidParams } from '../game/fluid/fluidProtocol';
 import { GameConfig } from '../game/config/GameConfig';
-import { UI_SCALE } from '../game/Game';
+import { UI_SCALE } from '../game/config/uiScale';
 
 // Радиус круга в текстуре 'enemy' (SVG 20x20, circle r=8) — для масштабирования
 const ENEMY_TEX_RADIUS = 8;

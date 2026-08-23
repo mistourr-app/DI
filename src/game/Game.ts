@@ -1,13 +1,6 @@
 import Phaser from 'phaser';
 import { GameScene } from '../scenes/GameScene';
-
-/**
- * Масштаб рендера: канвас рисуется в ФИЗИЧЕСКИХ пикселях устройства
- * (иначе на HiDPI-экранах всё размыто), а отображается в CSS-пикселях
- * через zoom = 1/UI_SCALE. Все игровые координаты становятся «плотными»,
- * UI-константы сцены умножаются на UI_SCALE для сохранения пропорций.
- */
-export const UI_SCALE: number = Math.min(window.devicePixelRatio || 1, 2);
+import { UI_SCALE } from './config/uiScale';
 
 export class Game {
   private phaserGame: Phaser.Game | null = null;
@@ -21,13 +14,13 @@ export class Game {
       parent: 'game-container',
       width: w,
       height: h,
-      zoom: 1 / UI_SCALE,
       backgroundColor: '#000000',
       scale: {
         mode: Phaser.Scale.NONE,
         autoCenter: Phaser.Scale.CENTER_BOTH,
         width: w,
-        height: h
+        height: h,
+        zoom: 1 / UI_SCALE
       },
       scene: [GameScene],
       physics: {
