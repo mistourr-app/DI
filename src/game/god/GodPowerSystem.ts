@@ -82,6 +82,12 @@ export class GodPowerSystem {
     return this.balance.superRadius;
   }
 
+  /** Полный сброс заряда и режима (новый уровень) */
+  reset(): void {
+    this.kills = 0;
+    this.armedFlag = false;
+  }
+
   /** Синхронизация после изменения superChargeRequired в настройках */
   onBalanceChanged(): void {
     if (this.armedFlag && !this.isCharged) {

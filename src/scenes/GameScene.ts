@@ -1125,7 +1125,7 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       if (this.gameOverShown) {
-        this.restartLevel();
+        this.restartLevel(true);
         return;
       }
 
@@ -1142,7 +1142,7 @@ export class GameScene extends Phaser.Scene {
   /** Выбор уровня в поп-апе: перезапуск с указанного уровня */
   private setLevel(level: number): void {
     this.currentLevel = Phaser.Math.Clamp(level, 1, GameScene.MAX_LEVEL);
-    this.restartLevel();
+    this.restartLevel(false);
   }
 
   /** Победа: следующий уровень (на 100 монстров больше) */
@@ -1151,10 +1151,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Перезапуск текущего уровня: НОВЫЙ лабиринт (seed), снятие всех живых
-   * монстров, сброс счётчиков спавна и HP базы
+   * Перезапуск уровня: НОВЫЙ лабиринт (seed), снятие всех живых монстров,
+   * сброс счётчиков спавна.
+   * @param restoreHealth true только при рестарте после GAME OVER
+   * (иначе мягкий лок); между уровнями HP базы НЕ восстанавливается
    */
-  private restartLevel(): void {
+  private restartLevel(restoreHealth: boolean): void {
     if (this.endText) {
       this.endText.destroy();
       this.endText = null;
@@ -1173,7 +1175,12 @@ export class GameScene extends Phaser.Scene {
     this.enemiesSpawned = 0;
     this.spawnTimer = 0;
     this.totalEnemiesToSpawn = this.currentLevel * GameScene.MONSTERS_PER_LEVEL_STEP;
-    this.baseHealth = this.baseMaxHealth;
+    if (restoreHealth) {
+      this.baseHealth = this.baseMaxHealth;
+    }
+    // Заряд силы бога не переносится на новый уровень
+    this.godPower.reset();
+    this.godIcon?.redraw();
     this.victoryShown = false;
     this.gameOverShown = false;
     this.showLevelBanner();
@@ -1278,17 +1285,22 @@ export class GameScene extends Phaser.Scene {
     this.enemyCount--;
   }
 
-  /** Белая вспышка бога: ядро + расширяющееся кольцо зоны поражения */
+  /** Белая вспышка бога: ядро + расширяющееся кольцо зоны поражения.
+   *  Масштаб вместо tween radius: сеттер Arc.radius после destroy()
+   *  обращается к занулённой геометрии и роняет кадр (Phaser 3.55) */
   private createWhiteFlash(x: number, y: number, radiusPx: number, isSuper: boolean): void {
     const coreR = radiusPx * (isSuper ? 0.45 : 0.35);
+    const coreScale = radiusPx / coreR;
     const core = this.add.circle(x, y, coreR, 0xffffff, 0.95).setDepth(900);
-    const ring = this.add.circle(x, y, coreR, 0xffffff, 0)
+    const ringR = coreR;
+    const ring = this.add.circle(x, y, ringR, 0xffffff, 0)
       .setStrokeStyle(isSuper ? 6 * UI_SCALE : 3 * UI_SCALE, 0xffffff, 0.9)
       .setDepth(900);
 
     this.tweens.add({
       targets: core,
-      radius: radiusPx,
+      scaleX: coreScale,
+      scaleY: coreScale,
       alpha: 0,
       duration: isSuper ? 320 : 240,
       ease: 'Quad.easeOut',
@@ -1296,7 +1308,8 @@ export class GameScene extends Phaser.Scene {
     });
     this.tweens.add({
       targets: ring,
-      radius: radiusPx,
+      scaleX: coreScale,
+      scaleY: coreScale,
       alpha: 0,
       duration: isSuper ? 460 : 340,
       ease: 'Cubic.easeOut',
