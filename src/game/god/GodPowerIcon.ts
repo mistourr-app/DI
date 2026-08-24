@@ -4,9 +4,14 @@
 // (маджента) за каждое убийство молниями.
 // Состояния:
 //   пустой/частичный — чёрный круг, бледная иконка;
-//   полный заряд     — лёгкая пульсация + лёгкие вспышки;
+//   полный заряд     — заметная пульсация + вспышки-кольца;
 //   выбрана (armed)  — кнопка увеличена, иконка максимально
 //                      яркая, пульс сильнее, яркое свечение.
+//
+// ВАЖНО: без Phaser.Container — в 3.55 кастомные пути Graphics
+// (beginPath/arc) внутри контейнера не рендерятся в WebGL.
+// Все части живут на уровне сцены в одной точке; масштабирование
+// armed — твином scale по массиву частей.
 // ============================================================
 
 import Phaser from 'phaser';
@@ -27,17 +32,19 @@ type FlashMode = 'none' | 'soft' | 'strong';
 export class GodPowerIcon {
   private readonly scene: Phaser.Scene;
   private readonly system: GodPowerSystem;
+  private readonly x: number;
+  private readonly y: number;
   private readonly radius: number;
 
-  /** Все визуальные части в контейнере — для масштабирования кнопки */
-  private readonly container: Phaser.GameObjects.Container;
-  private readonly glow: Phaser.GameObjects.Graphics;
-  private readonly bg: Phaser.GameObjects.Arc;
-  private readonly fill: Phaser.GameObjects.Graphics;
-  private readonly ring: Phaser.GameObjects.Arc;
-  private readonly bolt: Phaser.GameObjects.Text;
-  private readonly label: Phaser.GameObjects.Text;
-  private readonly zone: Phaser.GameObjects.Zone;
+  private glow: Phaser.GameObjects.Graphics;
+  private bg: Phaser.GameObjects.Arc;
+  private fill: Phaser.GameObjects.Graphics;
+  private ring: Phaser.GameObjects.Arc;
+  private bolt: Phaser.GameObjects.Text;
+  private label: Phaser.GameObjects.Text;
+  private zone: Phaser.GameObjects.Zone;
+  /** Все масштабируемые части кнопки (armed-пульс) */
+  private readonly parts: Phaser.GameObjects.GameObject[];
 
   private pulseTweens: Phaser.Tweens.Tween[] = [];
   private flashTimer: Phaser.Time.TimerEvent | null = null;
@@ -53,33 +60,32 @@ export class GodPowerIcon {
   ) {
     this.scene = scene;
     this.system = system;
+    this.x = x;
+    this.y = y;
     this.radius = radius;
 
-    this.container = scene.add.container(x, y);
-
-    // Свечение — под всем остальным, аддитивный бленд для «света»
-    this.glow = scene.add.graphics();
+    // Свечение — под всеми (аддитивный бленд для «света»).
+    // Graphics рисуется в ЛОКАЛЬНЫХ координатах вокруг (0,0) и позиционируется
+    // в центр иконки: origin у Graphics (0,0), иначе setScale разъезжает контент
+    this.glow = scene.add.graphics().setPosition(x, y);
     this.glow.setBlendMode(Phaser.BlendModes.ADD);
-    this.container.add(this.glow);
 
-    this.bg = scene.add.arc(0, 0, radius, 0, TWO_PI, false, COLOR_BG, 1);
+    this.bg = scene.add.arc(x, y, radius, 0, TWO_PI, false, COLOR_BG, 1);
     this.bg.setStrokeStyle(2 * UI_SCALE, COLOR_RING_DIM);
-    this.container.add(this.bg);
 
-    this.fill = scene.add.graphics();
-    this.container.add(this.fill);
+    this.fill = scene.add.graphics().setPosition(x, y);
 
-    this.ring = scene.add.arc(0, 0, radius).setFillStyle(0, 0);
+    this.ring = scene.add.arc(x, y, radius).setFillStyle(0, 0);
     this.ring.setStrokeStyle(2 * UI_SCALE, COLOR_RING_DIM);
-    this.container.add(this.ring);
 
-    this.bolt = scene.add.text(0, -radius * 0.05, '⚡', {
+    this.bolt = scene.add.text(x, y - radius * 0.05, '⚡', {
       font: `${Math.round(radius * 1.0)}px Arial`,
       color: '#ffffff'
     }).setOrigin(0.5);
-    this.container.add(this.bolt);
 
-    // Подпись и зона тапа — вне контейнера (не масштабируются)
+    this.parts = [this.glow, this.bg, this.fill, this.ring, this.bolt];
+
+    // Подпись — под кнопкой, не масштабируется
     this.label = scene.add.text(
       x,
       y + radius + fontPx(11),
@@ -92,6 +98,7 @@ export class GodPowerIcon {
       .setInteractive({ useHandCursor: true });
     this.zone.on('pointerdown', onToggle);
 
+    this.drawChargeFill();
     this.refreshState();
   }
 
@@ -104,16 +111,18 @@ export class GodPowerIcon {
   destroy(): void {
     this.stopFlashes();
     this.stopPulses();
-    this.scene.tweens.killTweensOf(this.container);
+    this.scene.tweens.killTweensOf(this.parts);
     this.zone.destroy();
     this.label.destroy();
-    this.container.destroy();
+    for (const p of this.parts) {
+      (p as Phaser.GameObjects.GameObject).destroy();
+    }
   }
 
   /**
-   * Заливка круга ниже/выше уровня заряда (сегмент круга).
-   * p=0 — пусто, p=1 — полный круг; уровень растёт снизу вверх.
-   * Координаты локальные (центр контейнера = 0,0).
+   * Заливка круга НИЖЕ уровня заряда — как жидкость в стаке:
+   * чёрный остаётся сверху, маджента наливается снизу вверх.
+   * p=0 — пусто, p=1 — полный круг.
    */
   private drawChargeFill(): void {
     const g = this.fill;
@@ -128,15 +137,15 @@ export class GodPowerIcon {
       return;
     }
 
-    // Хорда уровня: dy>0 — ниже центра (заполнено больше половины)
+    // Уровень поверхности: dy = +r (пусто) ... -r (полон)
     const dy = r - 2 * p * r;
     const w = Math.sqrt(Math.max(0, r * r - dy * dy));
     const a = Math.atan2(dy, w);
     g.beginPath();
-    g.moveTo(w, dy);
-    g.lineTo(-w, dy);
-    // Дуга от левого пересечения через ВЕРХ круга к правому
-    g.arc(0, 0, r, Math.PI - a, TWO_PI + a, false);
+    g.moveTo(-w, dy);
+    g.lineTo(w, dy);
+    // Дуга от правого пересечения через НИЗ круга (π/2) к левому
+    g.arc(0, 0, r, a, Math.PI - a, false);
     g.closePath();
     g.fillPath();
   }
@@ -168,14 +177,14 @@ export class GodPowerIcon {
 
     // --- Пульс и масштаб ---
     this.stopPulses();
-    this.scene.tweens.killTweensOf(this.container);
-    this.container.setScale(1);
+    this.scene.tweens.killTweensOf(this.parts);
+    this.setScale(1);
 
     if (armed) {
       // Кнопка увеличивается и пульсирует сильнее
-      this.container.setScale(1.22);
+      this.setScale(1.22);
       this.pulseTweens.push(this.scene.tweens.add({
-        targets: this.container,
+        targets: this.parts,
         scale: { from: 1.22, to: 1.3 },
         duration: 340,
         yoyo: true,
@@ -191,11 +200,19 @@ export class GodPowerIcon {
         ease: 'Sine.easeInOut'
       }));
     } else if (charged) {
-      // Лёгкая пульсация полного бара
+      // Заметная пульсация полного бара: дыхание альфой + размера
       this.pulseTweens.push(this.scene.tweens.add({
         targets: this.fill,
-        alpha: { from: 1, to: 0.78 },
-        duration: 900,
+        alpha: { from: 1, to: 0.55 },
+        duration: 650,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut'
+      }));
+      this.pulseTweens.push(this.scene.tweens.add({
+        targets: this.parts,
+        scale: { from: 1, to: 1.05 },
+        duration: 650,
         yoyo: true,
         repeat: -1,
         ease: 'Sine.easeInOut'
@@ -213,20 +230,25 @@ export class GodPowerIcon {
     this.pulseTweens = [];
   }
 
-  /** Свечение вокруг кнопки: концентрические круги с аддитивным блендом */
+  private setScale(s: number): void {
+    for (const p of this.parts) {
+      (p as Phaser.GameObjects.Shape).setScale(s);
+    }
+  }
+
+  /** Свечение ВОКРУГ кнопки: толстые кольца с аддитивным блендом.
+   *  Кольца, а не диски — иначе аддитив выбеливает сам бар */
   private drawGlow(armed: boolean): void {
     const g = this.glow;
     g.clear();
     if (!armed) return;
     const r = this.radius;
-    g.fillStyle(COLOR_GLOW, 0.1);
-    g.fillCircle(0, 0, r * 1.75);
-    g.fillStyle(COLOR_GLOW, 0.18);
-    g.fillCircle(0, 0, r * 1.5);
-    g.fillStyle(COLOR_GLOW, 0.3);
-    g.fillCircle(0, 0, r * 1.28);
-    g.fillStyle(0xffffff, 0.22);
-    g.fillCircle(0, 0, r * 1.12);
+    g.lineStyle(r * 0.3, COLOR_GLOW, 0.32);
+    g.strokeCircle(0, 0, r * 1.2);
+    g.lineStyle(r * 0.3, COLOR_GLOW, 0.18);
+    g.strokeCircle(0, 0, r * 1.5);
+    g.lineStyle(r * 0.35, COLOR_GLOW, 0.1);
+    g.strokeCircle(0, 0, r * 1.85);
   }
 
   /** Периодические вспышки из центра кнопки; режим меняется без перезапуска */
@@ -238,7 +260,7 @@ export class GodPowerIcon {
 
     const strong = mode === 'strong';
     this.flashTimer = this.scene.time.addEvent({
-      delay: strong ? 850 : 1900,
+      delay: strong ? 850 : 1200,
       loop: true,
       callback: () => { this.emitFlash(strong); }
     });
@@ -253,25 +275,39 @@ export class GodPowerIcon {
     this.flashMode = 'none';
   }
 
-  /** Одна вспышка: мягкий круг разлетается и гаснет.
+  /** Вспышка излучения из центра кнопки.
+   *  soft (полный заряд) — светящееся кольцо расходится за пределы бара;
+   *  strong (armed) — яркая белая вспышка-диск.
    *  Масштаб вместо tween radius: сеттер Arc.radius после destroy()
    *  обращается к занулённой геометрии и роняет кадр (Phaser 3.55) */
   private emitFlash(strong: boolean): void {
-    const r0 = this.radius * 0.45;
-    const flash = this.scene.add.circle(
-      0, 0,
-      r0,
-      strong ? 0xffffff : COLOR_FILL,
-      strong ? 0.5 : 0.26
-    );
-    this.container.add(flash);
+    const R = this.radius;
 
+    if (!strong) {
+      // Расходящееся светящееся кольцо — видно на чёрном фоне вокруг бара
+      const ring = this.scene.add.circle(this.x, this.y, R * 0.95, 0xff66ff, 0)
+        .setStrokeStyle(3 * UI_SCALE, 0xffaaff, 0.6);
+      this.scene.tweens.add({
+        targets: ring,
+        scaleX: 1.6,
+        scaleY: 1.6,
+        alpha: 0,
+        duration: 750,
+        ease: 'Cubic.easeOut',
+        onComplete: () => { ring.destroy(); }
+      });
+      return;
+    }
+
+    // Яркая вспышка-кольцо снаружи бара (диск выбеливал бы кнопку)
+    const flash = this.scene.add.circle(this.x, this.y, R * 1.02, 0xffffff, 0)
+      .setStrokeStyle(4 * UI_SCALE, 0xffffff, 0.75);
     this.scene.tweens.add({
       targets: flash,
-      scaleX: strong ? 4.2 : 3.2,
-      scaleY: strong ? 4.2 : 3.2,
+      scaleX: 1.9,
+      scaleY: 1.9,
       alpha: 0,
-      duration: strong ? 650 : 900,
+      duration: 500,
       ease: 'Cubic.easeOut',
       onComplete: () => { flash.destroy(); }
     });
