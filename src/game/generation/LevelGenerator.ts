@@ -204,8 +204,20 @@ export class LevelGenerator {
       }
     }
 
+    // --- 3.8 Фантомная полоса справа ---
+    // Сетка покрывает cols*CELL (может быть шире реального поля width).
+    // Ячейки с центром ЗА границей поля («фантомные») невидимы для игрока,
+    // но коллизионны — монстры «обходят невидимое препятствие» у правого
+    // края. Очищаем их ДО построения полигонов (и коллизии, и отрисовка).
+    for (let cy = 0; cy < rows; cy++) {
+      const row = cy * cols;
+      for (let cx = 0; cx < cols; cx++) {
+        if ((cx + 0.5) * CELL >= width) grid[row + cx] = 0;
+      }
+    }
+
     // --- 4. Контурная трассировка блобов -> сглаженные полигоны ---
-    const obstacles = this.buildPolygons(grid, cols, rows);
+    const obstacles = this.buildPolygons(grid, cols, rows, width);
 
     const basePosition = { x: width / 2, y: height };
     const spawnPoints = entrances.map(e => ({ x: e.x, y: 6 }));
@@ -225,6 +237,8 @@ export class LevelGenerator {
         if (cx < 0 || cy < 0 || cx >= cols || cy >= rows) {
           return false; // вне поля боя коллизий нет
         }
+        // Фантомная полоса справа: сетка шире реального поля (cols*cell > width)
+        if (x >= width) return false;
         return grid[cy * cols + cx] === 1;
       },
       getCollisionField: (): {
@@ -714,8 +728,15 @@ export class LevelGenerator {
    * Трассировка контуров занятых клеток: направленные граничные рёбра
    * (по часовой стрелке) сцепляются в замкнутые петли, затем петли
    * сглаживаются алгоритмом Chaikin -> органичные формы без угловатости.
+   * Мелкие «кляксы» (площадь < 2 клеток) отсеиваются, НО у кромок поля
+   * сохраняются: иначе коллизия без отрисовки — «невидимое препятствие».
    */
-  private buildPolygons(grid: Uint8Array, cols: number, rows: number): ObstaclePolygon[] {
+  private buildPolygons(
+    grid: Uint8Array,
+    cols: number,
+    rows: number,
+    fieldWidthPx?: number
+  ): ObstaclePolygon[] {
     type Edge = [number, number, number, number];
     const edges: Edge[] = [];
     const startMap = new Map<string, number[]>();
@@ -798,14 +819,21 @@ export class LevelGenerator {
         pts = nextPts;
       }
 
-      // Отсев мелких клякс по площади (формула шнурования)
+      // Отсев мелких клякс по площади (формула шнурования).
+      // У кромок поля НЕ отсеиваем: иначе «невидимое препятствие» —
+      // коллизия без отрисовки у левого/правого края.
       let area2 = 0;
+      let minX = Infinity, maxX = -Infinity;
       for (let i = 0; i < pts.length; i++) {
         const a = pts[i];
         const b = pts[(i + 1) % pts.length];
         area2 += a.x * b.y - b.x * a.y;
+        if (a.x < minX) minX = a.x;
+        if (a.x > maxX) maxX = a.x;
       }
-      if (Math.abs(area2) / 2 < CELL * CELL * 2) continue;
+      const nearEdge =
+        minX <= CELL || (fieldWidthPx !== undefined && maxX >= fieldWidthPx - CELL);
+      if (Math.abs(area2) / 2 < CELL * CELL * 2 && !nearEdge) continue;
 
       result.push({ points: pts });
     }
