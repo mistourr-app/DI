@@ -65,6 +65,8 @@ export class GameScene extends Phaser.Scene {
   // Настройки монстров
   private enemySpeed: number = 0.75;       // Базовая скорость монстров
   private enemySize: number = 5;           // Размер монстров
+  /** Дебаг-панель: по умолчанию выключена (тоггл в поп-апе ⚙) */
+  private debugPanelEnabled: boolean = false;
 
   // Уровень (генерация по seed)
   private levelGenerator!: LevelGenerator;
@@ -1333,7 +1335,20 @@ export class GameScene extends Phaser.Scene {
   /** Длительность цикла синка позиций из воркера (EMA) */
   private syncMs = 0;
 
+  /** Применить видимость дебаг-панели сразу (тоггл в поп-апе) */
+  private refreshDebugPanel(): void {
+    if (!this.debugText) return;
+    this.debugText.setVisible(this.debugPanelEnabled);
+  }
+
   private updateDebugInfo(): void {
+    // Дебаг-панель по умолчанию ВЫКЛЮЧЕНА (тоггл в поп-апе ⚙)
+    if (!this.debugPanelEnabled) {
+      if (this.debugText && this.debugText.visible) this.debugText.setVisible(false);
+      return;
+    }
+    if (this.debugText && !this.debugText.visible) this.debugText.setVisible(true);
+
     // setText растеризует текст и заливает текстуру в GPU — делаем это
     // 4 раза в секунду, а не каждый кадр
     this.debugTextTimer += this.game.loop.delta;
@@ -1424,9 +1439,9 @@ export class GameScene extends Phaser.Scene {
     const rowHeight = fontPx(28); // компактные строки (панель растёт с числом строк)
     const genBtnH = fontPx(48);
     const padBottom = padPx(16);
-    // 9 строк спавна/генерации/силы бога + 8 строк баланса стихий/заряда
-    // + 2 строки длительности стихий/статуса + строка сбросов
-    const rowCount = 20;
+    // 6 строк уровня/скорости/генерации/силы бога + 8 строк баланса стихий/заряда
+    // + 3 строки длительности стихий/статуса/дебага + строка сбросов
+    const rowCount = 18;
     const panelHeight = headerH + rowCount * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(padPx(20), screenHeight * 0.06));
@@ -1514,13 +1529,6 @@ export class GameScene extends Phaser.Scene {
       y += rowHeight;
     };
 
-    // Интервал между спавнами монстров
-    addRow('Интервал спавна, мс',
-      () => { this.spawnInterval = Math.max(10, this.spawnInterval - 10); },
-      () => { this.spawnInterval = Math.min(5000, this.spawnInterval + 10); },
-      () => `${this.spawnInterval}`
-    );
-
     // Уровень: N даёт N*100 монстров; победа открывает следующий
     addRow('Уровень (x100 монстров)',
       () => { this.setLevel(this.currentLevel - 1); },
@@ -1528,25 +1536,11 @@ export class GameScene extends Phaser.Scene {
       () => `${this.currentLevel} (${this.totalEnemiesToSpawn})`
     );
 
-    // Одновременный лимит живых монстров (потолок = ёмкость физики)
-    addRow('Максимум на экране',
-      () => { this.maxEnemiesOnScreen = Math.max(10, this.maxEnemiesOnScreen - 10); },
-      () => { this.maxEnemiesOnScreen = Math.min(MAX_AGENTS, this.maxEnemiesOnScreen + 10); },
-      () => `${this.maxEnemiesOnScreen}`
-    );
-
     // Базовая скорость движения одного монстра
     addRow('Скорость монстров',
       () => { this.enemySpeed = Math.max(0.1, this.enemySpeed - 0.05); this.syncFluidParams(); },
       () => { this.enemySpeed = Math.min(10, this.enemySpeed + 0.05); this.syncFluidParams(); },
       () => `${this.enemySpeed.toFixed(2)}`
-    );
-
-    // Визуальный размер монстра и его хитбокс
-    addRow('Размер монстров',
-      () => { this.enemySize = Math.max(2, this.enemySize - 1); this.applyEnemySizeToAll(); this.syncFluidParams(); },
-      () => { this.enemySize = Math.min(50, this.enemySize + 1); this.applyEnemySizeToAll(); this.syncFluidParams(); },
-      () => `${this.enemySize}`
     );
 
     // --- Параметры генерации уровня: пересборка на лету с тем же seed ---
@@ -1668,6 +1662,13 @@ export class GameScene extends Phaser.Scene {
       () => { this.setStatusDuration(GameConfig.elements.water.wetDuration - 1); },
       () => { this.setStatusDuration(GameConfig.elements.water.wetDuration + 1); },
       () => `${GameConfig.elements.water.wetDuration}`
+    );
+
+    // Тоггл дебаг-панели (по умолчанию выключена)
+    addRow('Дебаг-панель',
+      () => { this.debugPanelEnabled = false; this.refreshDebugPanel(); },
+      () => { this.debugPanelEnabled = true; this.refreshDebugPanel(); },
+      () => (this.debugPanelEnabled ? 'Вкл' : 'Выкл')
     );
 
     // Кнопки сброса (в одну строку): силы и параметры генерации
@@ -1822,15 +1823,6 @@ export class GameScene extends Phaser.Scene {
   /** Сохранение текущего тюнинга в localStorage */
   private persistTuning(): void {
     TuningStore.save(this.collectTuning());
-  }
-
-  /** Применяет новый размер ко всем живым врагам (событийно, не каждый кадр) */
-  private applyEnemySizeToAll(): void {
-    const s = (this.enemySize * UI_SCALE) / ENEMY_TEX_RADIUS;
-    const children = this.enemies.getChildren();
-    for (let i = 0; i < children.length; i++) {
-      (children[i] as any).setScale(s);
-    }
   }
 
   /** Одинаковая длительность зоны Огонь/Вода/Воздух (будущая раздельная прокачка) */
