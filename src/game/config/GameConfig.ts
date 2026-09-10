@@ -58,7 +58,7 @@ export const GameConfig = {
       cost: 10,
       capacity: 20,
       gainPerKill: 2,
-      costPerUse: 8,
+      costPerUse: 7,
       // Эффект «горение» (Итерация 4): горит, пока существует зона огня.
       // Монстр в огне поджигается, умирает после burnDuration в огне.
       // При смерти — минимальный поджог соседей (шанс spreadChance, лимит
@@ -76,7 +76,7 @@ export const GameConfig = {
       cost: 8,
       capacity: 20,
       gainPerKill: 2,
-      costPerUse: 8,
+      costPerUse: 7,
       // Эффект «замедление» (Итерация 4): скорость × slowFactor в зоне,
       // пока зона воды существует (статус Мокрый — голубой); после выхода
       // из воды монстр остаётся мокрым wetDuration с (замедление держится).
@@ -102,7 +102,7 @@ export const GameConfig = {
       cost: 6,
       capacity: 20,
       gainPerKill: 2,
-      costPerUse: 8,
+      costPerUse: 7,
       // Эффект «отброс» (Итерация 4): сдувает монстров, вошедших в зону,
       // пока зона существует; направление — вектор жеста, сила pushStrength.
       // После выхода монстр сохраняет инерцию (дрейф затухает постепенно),
