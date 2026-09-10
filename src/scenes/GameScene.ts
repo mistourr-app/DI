@@ -20,8 +20,6 @@ const DEBUG_TEXT_INTERVAL = 250;
 // Границы адаптивного кегля дебаг-панели (в игровых px = css * UI_SCALE)
 const DEBUG_FONT_MAX = Math.round(16 * UI_SCALE);
 const DEBUG_FONT_MIN = Math.round(9 * UI_SCALE);
-// Заводские множители сил жидкости — для кнопки сброса слайдеров
-const FLUID_DEFAULTS = { ...GameConfig.enemies.fluid };
 
 // Дефолтный tint монстра (§3.7: базовая текстура белая, цвет — tint'ом)
 const DEFAULT_ENEMY_TINT = 0xed0000;
@@ -1440,8 +1438,8 @@ export class GameScene extends Phaser.Scene {
     const genBtnH = fontPx(34);
     const padBottom = padPx(12);
     // 6 строк уровня/скорости/генерации/силы бога + 8 строк баланса стихий/заряда
-    // + 3 строки длительности стихий/статуса/дебага + строка сбросов
-    const rowCount = 18;
+    // + 3 строки длительности стихий/статуса/дебага
+    const rowCount = 17;
     const panelHeight = headerH + rowCount * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(padPx(20), screenHeight * 0.06));
@@ -1670,35 +1668,6 @@ export class GameScene extends Phaser.Scene {
       () => { this.debugPanelEnabled = true; this.refreshDebugPanel(); },
       () => (this.debugPanelEnabled ? 'Вкл' : 'Выкл')
     );
-
-    // Кнопка сброса сил (в одну строку с «Сгенерировать уровень»)
-    const rstY = y + padPx(4);
-    const btnHw = panelWidth - padPx(28);
-
-    const makeReset = (x: number, w: number, label: string, cb: () => void): void => {
-      const bg = this.add.graphics();
-      bg.fillStyle(0x444444, 1);
-      bg.fillRoundedRect(x, rstY, w, fontPx(24), padPx(6));
-      popup.add(bg);
-
-      const label_ = this.add.text(x + w / 2, rstY + fontPx(12), label, {
-        font: `bold ${fontPx(12)}px Arial`,
-        color: '#dddddd'
-      }).setOrigin(0.5);
-      popup.add(label_);
-
-      const zone = this.add.zone(x, rstY, w, fontPx(24)).setOrigin(0, 0)
-        .setInteractive({ useHandCursor: true });
-      zone.on('pointerdown', cb);
-      popup.add(zone);
-    };
-
-    makeReset(px + padPx(14), btnHw, 'Сброс сил', () => {
-      Object.assign(GameConfig.enemies.fluid, FLUID_DEFAULTS);
-      this.updatePopupValues();
-      this.syncFluidParams();
-    });
-    y += rowHeight;
 
     // Кнопка генерации нового уровня
     const genY = y + padPx(4);
