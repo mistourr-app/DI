@@ -15,18 +15,29 @@
 //   - полностью над препятствием — ничего не рисуется, 0 маны.
 //
 // Вода/Огонь/Воздух: слой плавно исчезает за duration мс с pointerup.
-// Земля: стойкий слой (пока без блокировки; Итерация 2 — барьер).
+// Земля: стойкий слой (Итерация 2 — барьер).
+//
+// Рендер (оптимизация, Optimisation): вместо Graphics — спрайты-точки
+// из общего пула с soft-текстурой (setTint цвета стихии). Весь штрих —
+// один draw call, нет перерисовки текстуры каждый кадр во время жеста;
+// затухание — один твин по массиву спрайтов, затем возврат в пул.
 // ============================================================
 
 import Phaser from 'phaser';
 import { UI_SCALE } from '../config/uiScale';
 import type { ElementConfig, ElementType } from '../config/GameConfig';
+import { DotPool } from '../visuals/dotTexture';
 
 /** Минимальное смещение между точками штриха, доля толщины линии */
 const POINT_SPACING_RATIO = 0.5;
 
 /** Минимальное суммарное смещение, чтобы считать жест рисованием, css-px */
 const MIN_DRAW_DISTANCE = 12;
+
+/** Альфа спрайтов штриха (паритет с прежней alpha 0.5 у Graphics) */
+const STROKE_ALPHA = 0.5;
+/** Рендер-глубина штриха (над землёй и полем) */
+const STROKE_DEPTH = 800;
 
 export type DrawResult = 'draw' | 'tap' | 'none';
 
@@ -42,10 +53,14 @@ export class ElementDrawer {
   /** Земля-штрих: отдаёт нарисованный путь (сцена превращает его в барьер) */
   private onEarthStroke: ((points: StrokePoint[]) => void) | null;
 
-  private graphics: Phaser.GameObjects.Graphics | null = null;
-  private persistentLayers: Phaser.GameObjects.Graphics[] = [];
-  /** Точки, реально нарисованные текущим штрихом (для растеризации Земли) */
-  private paintedPoints: StrokePoint[] = [];
+  private pool: DotPool;
+  private strokeActive = false;
+  /** Спрайты-точки текущего штриха */
+  private strokeSprites: Phaser.GameObjects.Image[] = [];
+  /** Спрайты, доживающие затухание (возврат в пул по завершении твина) */
+  private fadingSprites: Phaser.GameObjects.Image[] = [];
+  /** Координаты нарисованных точек: [x0,y0,x1,y1,...] для растеризации Земли */
+  private paintedPts: number[] = [];
 
   private elementKey: ElementType | null = null;
   private cfg: ElementConfig | null = null;
@@ -74,11 +89,12 @@ export class ElementDrawer {
     this.scene = scene;
     this.isBlocked = isBlocked;
     this.onEarthStroke = onEarthStroke;
+    this.pool = new DotPool(scene);
   }
 
   /** Идёт ли в данный момент штрих (после beginPotential, до end) */
   get active(): boolean {
-    return this.graphics !== null;
+    return this.strokeActive;
   }
 
   /** Длина пути пальца за последний штрих (px) */
@@ -91,15 +107,19 @@ export class ElementDrawer {
     return this.paintedLen;
   }
 
+  /** Число спрайтов-точек активного штриха (для дебаг-панели) */
+  get pointCount(): number {
+    return this.strokeSprites.length;
+  }
+
   /**
    * Начало потенциального штриха (pointerdown при выбранной стихии).
    * maxPaintedLength — лимит отрисованной длины из бюджета маны (px).
    * Решение «тап или рисование» принимается в end().
    */
   beginPotential(x: number, y: number, key: ElementType, cfg: ElementConfig, maxPaintedLength: number): void {
-    if (this.graphics) {
-      this.graphics.destroy();
-      this.graphics = null;
+    if (this.strokeActive) {
+      this.cancel();
     }
     this.elementKey = key;
     this.cfg = cfg;
@@ -116,11 +136,10 @@ export class ElementDrawer {
     this.totalPathLen = 0;
     this.paintedLen = 0;
     this.pendingLen = 0;
-    this.paintedPoints = [];
+    this.paintedPts = [];
     this.maxPaintedLen = maxPaintedLength;
     // Линия наносится сразу финальной альфой (без предпросмотра)
-    this.graphics = this.scene.add.graphics();
-    this.graphics.setAlpha(0.5).setDepth(800);
+    this.strokeActive = true;
   }
 
   /**
@@ -129,7 +148,7 @@ export class ElementDrawer {
    * препятствиях пропускаются (не рисуются, не в длине).
    */
   onMove(x: number, y: number): void {
-    if (!this.graphics || !this.cfg) return;
+    if (!this.strokeActive || !this.cfg) return;
 
     const dx = x - this.lastSampleX;
     const dy = y - this.lastSampleY;
@@ -204,16 +223,13 @@ export class ElementDrawer {
    *          'none'  — жест был, но нарисовано нечего (всё на препятствиях).
    */
   end(): DrawResult {
-    if (!this.graphics || !this.cfg) return 'none';
-    const g = this.graphics;
+    if (!this.strokeActive || !this.cfg) return 'none';
     const key = this.elementKey!;
+    this.strokeActive = false;
 
     if (!this.drawing) {
-      // Тап: превью удаляется, сцена решает, что делать
-      g.destroy();
-      this.graphics = null;
-      this.elementKey = null;
-      this.cfg = null;
+      // Тап: спрайты уже не создавались, возвращаем стейт
+      this.resetStroke();
       return 'tap';
     }
 
@@ -226,70 +242,102 @@ export class ElementDrawer {
 
     if (this.paintedLen <= 0) {
       // Жест был, но всё на препятствиях: ничего не нарисовано, 0 маны
-      g.destroy();
-      this.graphics = null;
-      this.elementKey = null;
-      this.cfg = null;
+      this.pool.releaseAll(this.strokeSprites);
+      this.resetStroke();
       return 'none';
     }
 
-    this.graphics = null;
+    const sprites = this.strokeSprites;
+    this.strokeSprites = [];
 
     if (key === 'earth') {
       // Земля-барьер (Итерация 2): путь отдаётся сцене -> EarthBarrierSystem
-      // растеризует его в ячейки; полилиния больше не нужна
-      const pts = this.paintedPoints;
+      // растеризует его в ячейки; точки-спрайты штриха больше не нужны
+      const flat = this.paintedPts;
+      const pts: StrokePoint[] = new Array(flat.length / 2);
+      for (let i = 0, j = 0; i < flat.length; i += 2, j++) {
+        pts[j] = { x: flat[i], y: flat[i + 1] };
+      }
+      this.pool.releaseAll(sprites);
       if (this.onEarthStroke) {
-        g.destroy();
         this.onEarthStroke(pts);
-      } else {
-        this.persistentLayers.push(g);
       }
     } else {
       // Вода/Огонь/Воздух: плавно исчезает за duration мс с момента отпускания
       const duration = Math.max(1, this.cfg.duration * 1000);
+      this.fadingSprites.push(...sprites);
       this.scene.tweens.add({
-        targets: g,
+        targets: sprites,
         alpha: 0,
         delay: duration * 0.6,
         duration: duration * 0.4,
-        onComplete: () => { g.destroy(); }
+        onComplete: () => {
+          const first = sprites[0];
+          const n = sprites.length;
+          this.pool.releaseAll(sprites);
+          const start = first ? this.fadingSprites.indexOf(first) : -1;
+          if (start >= 0) {
+            this.fadingSprites.splice(start, n);
+          }
+        }
       });
     }
 
-    this.elementKey = null;
-    this.cfg = null;
+    this.resetStroke();
     return 'draw';
   }
 
   /** Отмена штриха без коммита (например, увод указателя из зоны) */
   cancel(): void {
-    if (this.graphics) {
-      this.graphics.destroy();
-      this.graphics = null;
+    if (this.strokeActive) {
+      this.strokeActive = false;
+      this.pool.releaseAll(this.strokeSprites);
     }
-    this.elementKey = null;
-    this.cfg = null;
+    this.resetStroke();
   }
 
-  /** Уничтожить все стойкие слои (новый уровень / перезапуск) */
+  /**
+   * Очистить стойкие слои (новый уровень / перезапуск).
+   * Спрайты штриха живут только во время жеста/затухания, земля —
+   * в EarthBarrierSystem (пересоздаётся на generateLevel) — метод
+   * сохранён для совместимости API, ничего не делает.
+   */
   clearPersistent(): void {
-    for (const g of this.persistentLayers) {
-      g.destroy();
-    }
-    this.persistentLayers = [];
+    // no-op
   }
 
   destroy(): void {
     this.cancel();
-    this.clearPersistent();
+    this.scene.tweens.killTweensOf(this.fadingSprites);
+    this.pool.releaseAll(this.fadingSprites);
+    this.pool.destroy();
   }
 
-  private paintLine(x1: number, y1: number, x2: number, y2: number, len?: number): void {
-    const g = this.graphics;
-    if (!g || !this.cfg) return;
+  /** Сброс состояния после завершения штриха */
+  private resetStroke(): void {
+    this.elementKey = null;
+    this.cfg = null;
+    this.drawing = false;
+    this.stalled = false;
+    this.paintedLen = 0;
+    this.pendingLen = 0;
+    this.paintedPts = [];
+    this.maxPaintedLen = Infinity;
+  }
+
+  /** Точка: один спрайт-«капс» в цвет стихии */
+  private paintPoint(x: number, y: number): void {
+    if (!this.cfg) return;
     const r = this.cfg.radius * UI_SCALE;
-    const color = this.cfg.color;
+    const s = this.pool.obtain(x, y, r, this.cfg.color, STROKE_ALPHA, STROKE_DEPTH);
+    this.strokeSprites.push(s);
+    this.paintedPts.push(x, y);
+  }
+
+  /** Отрезок: цепочка точек с шагом ~половина толщины (непрерывная линия) */
+  private paintLine(x1: number, y1: number, x2: number, y2: number, len?: number): void {
+    const cfg = this.cfg;
+    if (!cfg) return;
     // Ограничение длины сегмента: тянем часть линии к точке x2,y2
     if (len !== undefined && len >= 0) {
       const dx = x2 - x1;
@@ -301,23 +349,16 @@ export class ElementDrawer {
         y2 = y1 + dy * k;
       }
     }
-    g.fillStyle(color, 0.6);
-    g.lineStyle(r * 2, color, 0.6);
-    g.beginPath();
-    g.moveTo(x1, y1);
-    g.lineTo(x2, y2);
-    g.strokePath();
-    // Капсы: круг на каждой точке, чтобы ломаная выглядела непрерывной
-    g.fillCircle(x2, y2, r);
-    this.paintedPoints.push({ x: x2, y: y2 });
-  }
-
-  private paintPoint(x: number, y: number): void {
-    const g = this.graphics;
-    if (!g || !this.cfg) return;
-    const r = this.cfg.radius * UI_SCALE;
-    g.fillStyle(this.cfg.color, 0.6);
-    g.fillCircle(x, y, r);
-    this.paintedPoints.push({ x, y });
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d <= 0) return;
+    const r = cfg.radius * UI_SCALE;
+    const spacing = Math.max(2, r * POINT_SPACING_RATIO);
+    const steps = Math.max(1, Math.round(d / spacing));
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      this.paintPoint(x1 + dx * t, y1 + dy * t);
+    }
   }
 }

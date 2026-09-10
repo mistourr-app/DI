@@ -86,6 +86,9 @@ export class GameScene extends Phaser.Scene {
   private earthBarrier!: EarthBarrierSystem;
   /** Сколько длины уже оплачено за текущий штрих (px), для поюнитного списания */
   private strokeChargedLen = 0;
+  /** Атакующие землю в этом кадре: позиции, батчатся в один укус в update() */
+  private pendingBites: Array<{ x: number; y: number }> = [];
+  private pendingBiteCount = 0;
 
   // Константы
   private static readonly BATTLEFIELD_RATIO = 5 / 6;
@@ -687,6 +690,17 @@ export class GameScene extends Phaser.Scene {
       this.updateEnemyMovement();
     }
 
+    // Батч укусов земли: один проход за кадр со всеми атакующими
+    // (одна публикация в воркер, обновляются только затронутые ячейки)
+    if (this.pendingBiteCount > 0) {
+      this.earthBarrier?.biteCellsAroundMany(
+        this.pendingBites,
+        this.pendingBiteCount,
+        GameConfig.earth.biteRadius * UI_SCALE
+      );
+      this.pendingBiteCount = 0;
+    }
+
     // Обновляем debug информацию
     this.updateDebugInfo();
 
@@ -730,20 +744,28 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Земля-барьер: монстры, атакующие землю, гибнут и грызут ячейки
-    // (per-cell HP, bitesPerCell). Мана/заряд бога за эти смерти НЕ начисляются
+    // (per-cell HP, bitesPerCell). Мана/заряд бога за эти смерти НЕ начисляются.
+    // Укусы копятся в pendingBites и выполняются ОДНИМ проходом в update()
+    // (вместо полной перерисовки барьера на каждого атакующего)
     for (let a = 0; a < info.attackCount; a++) {
       const id = info.attackIds[a];
       const sprite = this.spriteById.get(id);
       if (sprite && sprite.active) {
         this.killEnemy(sprite);
-        this.earthBarrier?.biteCellsAround(
-          sprite.x,
-          sprite.y,
-          GameConfig.earth.biteRadius * UI_SCALE
-        );
+        this.pushPendingBite(sprite.x, sprite.y);
       }
     }
   };
+
+  /** Копит позицию атакующего в переиспользуемом буфере (без аллокаций) */
+  private pushPendingBite(x: number, y: number): void {
+    if (this.pendingBiteCount >= this.pendingBites.length) {
+      this.pendingBites.push({ x: 0, y: 0 });
+    }
+    const b = this.pendingBites[this.pendingBiteCount++];
+    b.x = x;
+    b.y = y;
+  }
 
   private updateEnemyMovement(): void {
     const baseX = this.base.x;
@@ -934,12 +956,15 @@ export class GameScene extends Phaser.Scene {
     
     const healthPercent = Math.round((this.baseHealth / this.baseMaxHealth) * 100);
     
-    // Компактный текст в 3 строки (расчётная ширина ~38 символов — см. placeDebugText)
+    // Компактный текст в 4 строки (расчётная ширина ~38 символов — см. placeDebugText)
     const simTag = this.fluidCtrl?.isWorkerMode ? 'W' : 'M';
+    const earthCells = this.earthBarrier?.cellCount() ?? 0;
+    const strokePts = this.elementDrawer.pointCount;
     this.debugText.setText([
       `HP: ${this.baseHealth}/${this.baseMaxHealth} (${healthPercent}%)`,
       `Ур.${this.currentLevel} | Монстры: ${this.enemyCount}/${this.maxEnemiesOnScreen}`,
-      `Sim${simTag}: ${this.simStepMs.toFixed(1)}мс | Всего: ${this.enemiesSpawned} | FPS: ${Math.round(this.game.loop.actualFps)}`
+      `Sim${simTag}: ${this.simStepMs.toFixed(1)}мс | Всего: ${this.enemiesSpawned} | FPS: ${Math.round(this.game.loop.actualFps)}`,
+      `Земля: ${earthCells} | Штрих: ${strokePts}`
     ]);
     
     // Позиционируем текст у верхнего края экрана

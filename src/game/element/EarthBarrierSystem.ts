@@ -8,12 +8,15 @@
 //
 // Чистые хелперы ячеек (cellsWithinCircle/cellAt/biteCells)
 // тестируются без Phaser.
-// Визуал: каждая ячейка — перекрывающийся круг r≈0.72·клетки,
-// темнеет по мере потери HP и исчезает при 0.
+// Визуал: каждая ячейка — спрайт-точка из общего пула (мягкий круг),
+// оттенок темнеет по мере потери HP, при 0 — прячется в пул.
+// Нет полной перерисовки Graphics: укус меняет только затронутые
+// спрайты, весь барьер — один draw call общей текстуры.
 // ============================================================
 
 import Phaser from 'phaser';
-import { cellsWithinCircle, cellAt, biteCells } from './earthCells';
+import { cellsWithinCircle, cellAt } from './earthCells';
+import { DotPool } from '../visuals/dotTexture';
 
 /** Опции инициализации: размеры коллизионной сетки и смещение поля боя */
 export interface EarthBarrierOptions {
@@ -27,32 +30,34 @@ export interface EarthBarrierOptions {
 }
 
 export class EarthBarrierSystem {
-  private scene: Phaser.Scene;
   private opts: EarthBarrierOptions | null = null;
   /** 0 = нет земли, 1..max = осталось укусов */
   private cellHp: Uint8Array | null = null;
   /** Начальное HP каждой ячейки (для темнения: k = hp/max) */
   private cellMax: Uint8Array | null = null;
-  private graphics: Phaser.GameObjects.Graphics | null = null;
   /** Публикация изменений в воркер (main подключает setEarth) */
   private onSet: ((cells: Int32Array, value: 0 | 1) => void) | null = null;
+  /** Спрайты ячеек: плоский индекс -> Image (только живые ячейки) */
+  private sprites = new Map<number, Phaser.GameObjects.Image>();
+  private pool: DotPool;
+  /** Визуальный радиус ячейки (px, мировой) — как старые круги r=0.72·клетки */
+  private cellVisualRadius = 0;
+
+  /** Рендер-глубина земли (под штрихами стихий и дебагом) */
+  private static readonly DEPTH = 700;
 
   constructor(scene: Phaser.Scene) {
-    this.scene = scene;
+    this.pool = new DotPool(scene);
   }
 
   /** Инициализация под новый уровень (сетка, смещение поля, цвет) */
   init(opts: EarthBarrierOptions, onSet: (cells: Int32Array, value: 0 | 1) => void): void {
+    this.clear();
     this.opts = opts;
     this.cellHp = new Uint8Array(opts.cols * opts.rows);
     this.cellMax = new Uint8Array(opts.cols * opts.rows);
     this.onSet = onSet;
-    if (this.graphics) {
-      this.graphics.destroy();
-    }
-    this.graphics = this.scene.add.graphics();
-    this.graphics.setDepth(700);
-    this.render();
+    this.cellVisualRadius = opts.cellSize * 0.72;
   }
 
   /** Растеризация штриха: точки пути ± радиус -> ячейки земли с полным HP.
@@ -73,25 +78,67 @@ export class EarthBarrierSystem {
     for (const c of arr) {
       this.cellHp[c] = hp;
       this.cellMax[c] = hp;
+      // Спрайт ячейки: создаём при первом появлении, обновляем оттенок
+      this.ensureSprite(c).setTint(this.tintFor(c));
     }
     this.onSet?.(arr, 1);
-    this.render();
   }
 
   /**
-   * Укус монстра: ячейки в радиусе теряют 1 HP; разрушенные (HP=0)
-   * снимаются с коллизий воркера. Возвращает число разрушенных ячеек.
+   * Одиночный укус (legacy-путь без воркера и тесты): то же, что пакетный.
    */
   biteCellsAround(wx: number, wy: number, radiusPx: number): number {
-    if (!this.opts || !this.cellHp) return 0;
-    const lx = wx - this.opts.ox;
-    const ly = wy - this.opts.oy;
-    const cs = cellsWithinCircle(this.opts.cols, this.opts.rows, this.opts.cellSize, lx, ly, radiusPx);
-    const removed = biteCells(this.cellHp, cs);
-    if (removed.length === 0) return 0;
-    this.onSet?.(Int32Array.from(removed), 0);
-    this.render();
-    return removed.length;
+    return this.biteCellsAroundMany([{ x: wx, y: wy }], 1, radiusPx);
+  }
+
+  /**
+   * Пакетный укус за кадр: точки атакующих монстров объединяются в ОДИН
+   * проход — каждая ячейка теряет ровно столько HP, сколько атакующих
+   * попало в её круг в этом кадре (паритет с поштучными укусами).
+   * Одна публикация в воркер, обновляются только затронутые спрайты.
+   */
+  biteCellsAroundMany(
+    points: Array<{ x: number; y: number }>,
+    count: number,
+    radiusPx: number
+  ): number {
+    if (!this.opts || !this.cellHp || count <= 0) return 0;
+    const { cols, rows, cellSize } = this.opts;
+
+    // Ячейка -> сколько атакующих попало в неё за кадр
+    const attacks = new Map<number, number>();
+    for (let i = 0; i < count; i++) {
+      const pt = points[i];
+      const lx = pt.x - this.opts.ox;
+      const ly = pt.y - this.opts.oy;
+      const cs = cellsWithinCircle(cols, rows, cellSize, lx, ly, radiusPx);
+      for (const c of cs) {
+        attacks.set(c, (attacks.get(c) ?? 0) + 1);
+      }
+    }
+    if (attacks.size === 0) return 0;
+
+    let removedCount = 0;
+    const removed = new Int32Array(attacks.size);
+    for (const [c, dmg] of attacks) {
+      if (this.cellHp[c] === 0) continue;
+      this.cellHp[c] = this.cellHp[c] > dmg ? this.cellHp[c] - dmg : 0;
+      const s = this.sprites.get(c);
+      if (this.cellHp[c] === 0) {
+        // Разрушена: прячем спрайт, снимаем с коллизий воркера
+        if (s) {
+          this.pool.release(s);
+          this.sprites.delete(c);
+        }
+        removed[removedCount++] = c;
+      } else if (s) {
+        s.setTint(this.tintFor(c));
+      }
+    }
+    if (removedCount > 0) {
+      this.onSet?.(removed.length === removedCount ? removed : removed.slice(0, removedCount), 0);
+    }
+    return removedCount;
   }
 
   /** Земля ли в точке (мировые координаты) */
@@ -130,44 +177,48 @@ export class EarthBarrierSystem {
   clear(): void {
     if (this.cellHp) this.cellHp.fill(0);
     if (this.cellMax) this.cellMax.fill(0);
-    if (this.graphics) this.graphics.clear();
+    for (const s of this.sprites.values()) {
+      this.pool.release(s);
+    }
+    this.sprites.clear();
   }
 
   destroy(): void {
-    if (this.graphics) {
-      this.graphics.destroy();
-      this.graphics = null;
-    }
+    this.clear();
+    this.pool.destroy();
   }
 
-  private render(): void {
-    const g = this.graphics;
-    if (!g || !this.opts || !this.cellHp || !this.cellMax) return;
-    g.clear();
-    const { cols, rows, cellSize, ox, oy, color } = this.opts;
-    const r = cellSize * 0.72;
-    // Тёмная база цвета земли для плавного затемнения по мере укусов
-    const baseR = (color >> 16) & 0xff;
-    const baseG = (color >> 8) & 0xff;
-    const baseB = color & 0xff;
-    const darkR = Math.round(baseR * 0.25);
-    const darkG = Math.round(baseG * 0.25);
-    const darkB = Math.round(baseB * 0.25);
-
-    for (let cy = 0; cy < rows; cy++) {
-      const rowBase = cy * cols;
-      for (let cx = 0; cx < cols; cx++) {
-        const hp = this.cellHp[rowBase + cx];
-        if (hp === 0) continue;
-        // Полный HP — цвет земли; 1 HP — тёмный (почти разрушена)
-        const max = this.cellMax[rowBase + cx] || 1;
-        const k = hp / max;
-        const rr = Math.round(darkR + (baseR - darkR) * k);
-        const gg = Math.round(darkG + (baseG - darkG) * k);
-        const bb = Math.round(darkB + (baseB - darkB) * k);
-        g.fillStyle((rr << 16) | (gg << 8) | bb, 0.9);
-        g.fillCircle(ox + cx * cellSize + cellSize / 2, oy + cy * cellSize + cellSize / 2, r);
-      }
+  /** Спрайт ячейки (создаётся при первом появлении) */
+  private ensureSprite(c: number): Phaser.GameObjects.Image {
+    let s = this.sprites.get(c);
+    if (!s) {
+      const o = this.opts!;
+      const cx = c % o.cols;
+      const cy = (c / o.cols) | 0;
+      s = this.pool.obtain(
+        o.ox + cx * o.cellSize + o.cellSize / 2,
+        o.oy + cy * o.cellSize + o.cellSize / 2,
+        this.cellVisualRadius,
+        o.color,
+        0.9,
+        EarthBarrierSystem.DEPTH
+      );
+      this.sprites.set(c, s);
     }
+    return s;
+  }
+
+  /** Оттенок по доле оставшегося HP: полный — цвет земли, 1 HP — тёмный */
+  private tintFor(c: number): number {
+    const o = this.opts!;
+    const max = this.cellMax![c] || 1;
+    const k = this.cellHp![c] / max;
+    const baseR = (o.color >> 16) & 0xff;
+    const baseG = (o.color >> 8) & 0xff;
+    const baseB = o.color & 0xff;
+    const rr = Math.round(baseR * (0.25 + 0.75 * k));
+    const gg = Math.round(baseG * (0.25 + 0.75 * k));
+    const bb = Math.round(baseB * (0.25 + 0.75 * k));
+    return (rr << 16) | (gg << 8) | bb;
   }
 }
