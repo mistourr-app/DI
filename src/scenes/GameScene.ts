@@ -7,9 +7,10 @@ import { UI_SCALE, fontPx, padPx } from '../game/config/uiScale';
 import { GodPowerSystem } from '../game/god/GodPowerSystem';
 import { GodPowerIcon } from '../game/god/GodPowerIcon';
 import { ElementManaSystem, ELEMENT_KEYS } from '../game/element/ElementManaSystem';
-import { ElementDrawer } from '../game/element/ElementDrawer';
+import { ElementDrawer, type StrokePoint } from '../game/element/ElementDrawer';
 import { ElementAltarIcon } from '../game/element/ElementAltarIcon';
 import { EarthBarrierSystem } from '../game/element/EarthBarrierSystem';
+import { ElementEffectSystem } from '../game/element/ElementEffectSystem';
 import { TuningStore, type TuningSnapshot } from '../game/save/TuningStore';
 
 // Радиус круга в текстуре 'enemy' (SVG 20x20, circle r=8) — для масштабирования
@@ -21,6 +22,15 @@ const DEBUG_FONT_MAX = Math.round(16 * UI_SCALE);
 const DEBUG_FONT_MIN = Math.round(9 * UI_SCALE);
 // Заводские множители сил жидкости — для кнопки сброса слайдеров
 const FLUID_DEFAULTS = { ...GameConfig.enemies.fluid };
+
+// Дефолтный tint монстра (§3.7: базовая текстура белая, цвет — tint'ом)
+const DEFAULT_ENEMY_TINT = 0xed0000;
+// Троттлинг тика статусов стихий, мс (~10 Гц)
+const FX_TICK_INTERVAL = 100;
+// Инерция воздуха (fallback-путь): отклик в зоне, затухание вне, порог сноса
+const AIR_RESPONSE = 0.35;
+const AIR_DAMP = 0.97;
+const MIN_DRIFT_SQ = 0.0025;
 
 export class GameScene extends Phaser.Scene {
   private enemies!: Phaser.GameObjects.Group;
@@ -84,17 +94,25 @@ export class GameScene extends Phaser.Scene {
   private altars = new Map<ElementType, ElementAltarIcon>();
   /** Земля-барьер (Итерация 2): ячейки земли, прогрызаемые монстрами */
   private earthBarrier!: EarthBarrierSystem;
+  /** Эффекты стихий (Итерация 4): горение/замедление/отброс по зонам штриха */
+  private elementFx!: ElementEffectSystem;
+  /** Последнее время тика статусов стихий (троттлинг FX_TICK_INTERVAL) */
+  private lastFxTick = 0;
   /** Сколько длины уже оплачено за текущий штрих (px), для поюнитного списания */
   private strokeChargedLen = 0;
   /** Атакующие землю в этом кадре: позиции, батчатся в один укус в update() */
   private pendingBites: Array<{ x: number; y: number }> = [];
   private pendingBiteCount = 0;
+  /** Индикатор здоровья базы: заливка зоны базы цветом снизу вверх (0 HP = полная) */
+  private baseHealthFill: Phaser.GameObjects.Rectangle | null = null;
 
   // Константы
   private static readonly BATTLEFIELD_RATIO = 5 / 6;
   private static readonly BASE_RATIO = 1 / 6;
   private static readonly COLOR_BATTLEFIELD_BG = 0x0a0a1a;
   private static readonly COLOR_BASE_BG = 0x0a1a0a;
+  /** Цвет индикатора здоровья базы: заливка зоны базы снизу вверх (0 HP = полная) */
+  private static readonly COLOR_BASE_HEALTH = 0x461b1b;
   /** Доступно уровней: уровень N = N*100 монстров (50-й = 5000) */
   private static readonly MAX_LEVEL = 50;
   /** Монстров на первом уровне и шаг роста за уровень */
@@ -105,8 +123,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   preload(): void {
-    // Временные ассеты для прототипа
-    this.load.image('enemy', 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyMCAyMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTAiIGN5PSIxMCIgcj0iOCIgZmlsbD0iI0ZGMDAwMCIvPgo8L3N2Zz4=');
+    // Временные ассеты для прототипа. База монстра — БЕЛАЯ (нейтральная):
+    // цвет задаётся tint'ом (§3.7) — tint × белый = ровно нужный цвет
+    // (серая база умножала бы цвет и делала его тёмным/неразличимым).
+    this.load.image('enemy', 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyMCAyMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48Y2lyY2xlIGN4PSIxMCIgY3k9IjEwIiByPSI4IiBmaWxsPSIjRkZGRkZGIi8+PC9zdmc+');
   }
 
   create(): void {
@@ -125,18 +145,17 @@ export class GameScene extends Phaser.Scene {
     // Земля-барьер: ячейки инициализируются в generateLevel() под сетку уровня
     this.earthBarrier = new EarthBarrierSystem(this);
 
+    // Эффекты стихий (Итерация 4): зоны штрихов -> горение/замедление/отброс.
+    // Оверлеи инициализируются в generateLevel() под сетку уровня
+    this.elementFx = new ElementEffectSystem();
+
     // Рисование стихий на поле боя (препятствия не рисуются).
-    // Земля-штрих превращается в барьер из ячеек (EarthBarrierSystem)
+    // Земля-штрих превращается в барьер из ячеек (EarthBarrierSystem),
+    // прочие стихии — в зоны эффектов (ElementEffectSystem)
     this.elementDrawer = new ElementDrawer(
       this,
       (x, y) => this.isBlockedWorld(x, y),
-      (points) => {
-        this.earthBarrier.addStroke(
-          points,
-          GameConfig.elements.earth.radius * UI_SCALE,
-          GameConfig.earth.bitesPerCell
-        );
-      }
+      (key, points) => this.applyElementStroke(key, points)
     );
 
     // Создаем группу для врагов
@@ -199,6 +218,7 @@ export class GameScene extends Phaser.Scene {
       this.godIcon = null;
       this.elementDrawer?.destroy();
       this.earthBarrier?.destroy();
+      this.elementFx?.destroy();
     });
   }
 
@@ -224,7 +244,12 @@ export class GameScene extends Phaser.Scene {
       viscosity: f.viscosity,
       separation: f.separation,
       cohesion: f.cohesion,
-      alignment: f.alignment
+      alignment: f.alignment,
+      // Эффекты стихий (Итерация 4)
+      waterSlowFactor: GameConfig.elements.water.slowFactor ?? 0.5,
+      airPushStrength: GameConfig.elements.air.pushStrength ?? 1.5,
+      wetDuration: GameConfig.elements.water.wetDuration ?? 5,
+      airDuration: GameConfig.elements.air.airDuration ?? 5
     };
   }
 
@@ -360,6 +385,35 @@ export class GameScene extends Phaser.Scene {
     g.strokePath();
 
     this.zoneGraphics = g;
+
+    // Индикатор здоровья базы: заливка зоны базы цветом 461B1B СНИЗУ ВВЕРХ.
+    // Высота = доля потерянного здоровья (1 - HP/MAX): полная заливка = HP 0.
+    // Прямоугольник фиксирован по размеру, высота — через scaleY (без
+    // пересоздания геометрии каждый кадр). Ниже монстров (850) и UI.
+    if (this.baseHealthFill) {
+      this.baseHealthFill.destroy();
+      this.baseHealthFill = null;
+    }
+    const fill = this.add.rectangle(
+      this.baseZone.x + this.baseZone.width / 2,
+      this.baseZone.y + this.baseZone.height,
+      this.baseZone.width,
+      this.baseZone.height,
+      GameScene.COLOR_BASE_HEALTH,
+      0.85
+    );
+    fill.setOrigin(0.5, 1);
+    // Depth 0 (по умолчанию): создаётся в createZoneVisuals ДО алтарей
+    // (createElements) — рендерится ПОД ними, но над фоном зоны базы
+    this.baseHealthFill = fill;
+    this.updateBaseHealthFill();
+  }
+
+  /** Перерисовать заливку индикатора здоровья базы (событийно) */
+  private updateBaseHealthFill(): void {
+    if (!this.baseHealthFill) return;
+    const frac = 1 - this.baseHealth / Math.max(1, this.baseMaxHealth);
+    this.baseHealthFill.setScale(1, Phaser.Math.Clamp(frac, 0, 1));
   }
   
   private createBase(): void {
@@ -569,6 +623,22 @@ export class GameScene extends Phaser.Scene {
     e.vy = this.enemySpeed * UI_SCALE;
     e.aid = -1;
 
+    // Статусы стихий (Итерация 4): сброс при респауне из пула + дефолтный
+    // красный tint (базовая текстура белая, цвет — tint'ом по §3.7).
+    // wetRemain/drift — состояние эффектов для fallback-пути (без воркера)
+    e.burnUntil = 0;
+    e.wetUntil = 0;
+    e.airUntil = 0;
+    e.chainIgnited = false;
+    e.statusTint = DEFAULT_ENEMY_TINT;
+    e.wetRemain = 0;
+    e.driftX = 0;
+    e.driftY = 0;
+    enemy.setTint(DEFAULT_ENEMY_TINT);
+    // Монстры рисуются ПОВЕРХ стихий (штрихи на depth 800, земля — 700):
+    // стихии — фон, толпа — поверх, вспышки бога (900) и UI — выше всех
+    enemy.setDepth(850);
+
     // Регистрируем агента в воркере физики (координаты -> локальные поля боя)
     if (this.fluidCtrl?.isWorkerMode) {
       const id = this.fluidCtrl.addAgent(
@@ -625,6 +695,25 @@ export class GameScene extends Phaser.Scene {
         (cells, value) => { this.fluidCtrl?.setEarth(cells, value); }
       );
     }
+
+    // Эффекты стихий (Итерация 4): оверлеи под ту же сетку; публикация
+    // физических эффектов (вода/воздух) в воркер через setEffects
+    if (this.elementFx) {
+      const cf = this.level.getCollisionField();
+      this.elementFx.init(
+        {
+          cols: cf.cols,
+          rows: cf.rows,
+          cellSize: cf.cellSize,
+          ox: this.battlefieldZone.x,
+          oy: this.battlefieldZone.y
+        },
+        (effect, cells, value, dirX, dirY) => {
+          this.fluidCtrl?.setEffects(effect, cells, value, dirX, dirY);
+        },
+        { enemies: this.enemies, killEnemy: (e) => this.killEnemy(e) }
+      );
+    }
   }
 
   private renderObstacles(): void {
@@ -672,6 +761,31 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
+  /** Завершённый штрих: Земля -> барьер, прочие стихии -> зоны эффектов */
+  private applyElementStroke(key: ElementType, points: StrokePoint[]): void {
+    if (key === 'earth') {
+      this.earthBarrier.addStroke(
+        points,
+        GameConfig.elements.earth.radius * UI_SCALE,
+        GameConfig.earth.bitesPerCell
+      );
+      return;
+    }
+    this.elementFx.addStroke(points, key, this.strokeDirection(points));
+  }
+
+  /** Направление жеста рисования: от первой точки к последней (для воздуха) */
+  private strokeDirection(points: StrokePoint[]): { x: number; y: number } {
+    if (points.length === 0) return { x: 0, y: 1 };
+    const a = points[0];
+    const b = points[points.length - 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 1e-4) return { x: 0, y: 1 };
+    return { x: dx / len, y: dy / len };
+  }
+
   update(): void {
     // Диагностика: реальная длительность кадра (rAF-период, вкл. рендер)
     const now = performance.now();
@@ -709,6 +823,16 @@ export class GameScene extends Phaser.Scene {
         GameConfig.earth.biteRadius * UI_SCALE
       );
       this.pendingBiteCount = 0;
+    }
+
+    // Эффекты стихий (Итерация 4): истечение зон каждый кадр (дёшево),
+    // тик статусов (горение/мокрый/цепной поджог) — с троттлингом ~10 Гц
+    if (this.elementFx) {
+      this.elementFx.update(now);
+      if (now - this.lastFxTick >= FX_TICK_INTERVAL) {
+        this.lastFxTick = now;
+        this.elementFx.tickStatuses(now);
+      }
     }
 
     // Обновляем debug информацию
@@ -771,6 +895,8 @@ export class GameScene extends Phaser.Scene {
       if (sprite && sprite.active) {
         this.killEnemy(sprite);
         this.pushPendingBite(sprite.x, sprite.y);
+        // Вспышка укуса земли — как у базы, но в 2 раза меньше по радиусу
+        this.createHitEffect(sprite.x, sprite.y, 0.5);
       }
     }
   };
@@ -790,7 +916,6 @@ export class GameScene extends Phaser.Scene {
     const baseY = this.base.y;
     const zone = this.battlefieldZone;
     const targetSpeed = this.enemySpeed * UI_SCALE;
-    const maxSpeed = targetSpeed * 1.05;
     const minX = zone.x + 10 * UI_SCALE;
     const maxX = zone.x + zone.width - 10 * UI_SCALE;
     // Радиус хитбокса монстра (меньше визуального — прощающая коллизия)
@@ -802,15 +927,31 @@ export class GameScene extends Phaser.Scene {
       const enemy = children[i];
       if (!enemy.active) continue; // «мёртвые» из пула пропускаем
 
+      // Эффект воды (Итерация 4): в зоне скорость × slowFactor; после выхода
+      // «мокрый» (и замедление) держится wetDuration секунд — паритет с воркером
+      const dtSec = this.game.loop.delta / 1000;
+      if (this.elementFx?.waterAt(enemy.x, enemy.y)) {
+        enemy.wetRemain = GameConfig.elements.water.wetDuration ?? 5;
+      } else if (enemy.wetRemain > 0) {
+        enemy.wetRemain = Math.max(0, enemy.wetRemain - dtSec);
+      }
+      const inWater = this.elementFx?.waterAt(enemy.x, enemy.y) || enemy.wetRemain > 0;
+      const ts = inWater
+        ? targetSpeed * (GameConfig.elements.water.slowFactor ?? 0.5)
+        : targetSpeed;
+      const maxSpeed = ts * 1.05;
+
       // Земля-барьер (fallback): касающийся земли монстр атакует и гибнет,
       // грызя ячейки. Паритет с воркером (упреждающий хитбокс вниз)
-      const look = Math.max(targetSpeed, hitR);
+      const look = Math.max(ts, hitR);
       if (
         (this.earthBarrier && this.earthBarrier.hasEarthAtBox(enemy.x, enemy.y, hitR)) ||
         (this.earthBarrier && this.earthBarrier.hasEarthAtBox(enemy.x, enemy.y + look, hitR))
       ) {
         this.killEnemy(enemy);
         this.earthBarrier.biteCellsAround(enemy.x, enemy.y, GameConfig.earth.biteRadius * UI_SCALE);
+        // Вспышка укуса земли — как у базы, но в 2 раза меньше по радиусу
+        this.createHitEffect(enemy.x, enemy.y, 0.5);
         continue;
       }
 
@@ -823,8 +964,8 @@ export class GameScene extends Phaser.Scene {
       const dirY = distance > 0 ? dy / distance : 1;
 
       // Скорость к базе + минимальный шум
-      let nvx = dirX * targetSpeed + Phaser.Math.FloatBetween(-0.01, 0.01) * UI_SCALE;
-      let nvy = dirY * targetSpeed + Phaser.Math.FloatBetween(-0.01, 0.01) * UI_SCALE;
+      let nvx = dirX * ts + Phaser.Math.FloatBetween(-0.01, 0.01) * UI_SCALE;
+      let nvy = dirY * ts + Phaser.Math.FloatBetween(-0.01, 0.01) * UI_SCALE;
 
       const speed = Math.sqrt(nvx * nvx + nvy * nvy);
       if (speed > maxSpeed) {
@@ -859,6 +1000,34 @@ export class GameScene extends Phaser.Scene {
         nvx = 0;
       }
 
+      // Эффект воздуха (Итерация 4): инерция. В зоне дрейф к ветру,
+      // вне зоны — затухает (постепенное торможение). Паритет с воркером.
+      // ВАЖНО: вне зоны СОХРАНЯЕМ долю дрейфа (AIR_DAMP), а не (1 - AIR_DAMP)
+      const wind = this.elementFx?.airAt(enemy.x, enemy.y);
+      if (wind) {
+        const wtx = wind.x * (GameConfig.elements.air.pushStrength ?? 1.5);
+        const wty = wind.y * (GameConfig.elements.air.pushStrength ?? 1.5);
+        enemy.driftX += (wtx - enemy.driftX) * AIR_RESPONSE;
+        enemy.driftY += (wty - enemy.driftY) * AIR_RESPONSE;
+      } else {
+        enemy.driftX *= AIR_DAMP;
+        enemy.driftY *= AIR_DAMP;
+      }
+      if (enemy.driftX * enemy.driftX + enemy.driftY * enemy.driftY > MIN_DRIFT_SQ) {
+        const wx2 = enemy.x + enemy.driftX;
+        const wy2 = enemy.y + enemy.driftY;
+        if (!this.isBlockedBox(wx2, wy2, hitR)) {
+          enemy.x = wx2;
+          enemy.y = wy2;
+        } else if (!this.isBlockedBox(wx2, enemy.y, hitR)) {
+          enemy.x = wx2;
+        } else if (!this.isBlockedBox(enemy.x, wy2, hitR)) {
+          enemy.y = wy2;
+        }
+        nvx += enemy.driftX;
+        nvy += enemy.driftY;
+      }
+
       // Границы поля боя. Клэмп по верху УДАЛЕН: спавн выше экрана должен
       // свободно падать вниз — старый клэмп телепортировал свежих монстров
       // внутрь блобов у кромки, и они застревали
@@ -886,6 +1055,7 @@ export class GameScene extends Phaser.Scene {
 
     // Уменьшаем здоровье базы
     this.baseHealth = Math.max(0, this.baseHealth - 1);
+    this.updateBaseHealthFill();
 
     // Возвращаем врага в пул вместо уничтожения (нет нагрузки на GC)
     this.enemies.killAndHide(enemy);
@@ -936,16 +1106,15 @@ export class GameScene extends Phaser.Scene {
 
   private showGameOver(): void {
     this.gameOverShown = true;
-    this.showEndMessage('GAME OVER!', '#ff0000');
+    this.showEndMessage('Deus mortuus est', '#ff0000');
   }
 
   private showVictory(): void {
-    const last = this.currentLevel >= GameScene.MAX_LEVEL;
-    this.showEndMessage(last ? 'ИГРА ПРОЙДЕНА!' : 'ПОБЕДА!', '#ffd700');
+    this.showEndMessage('Deus vivit', '#ffd700');
   }
   
-  private createHitEffect(x: number, y: number): void {
-    const effect = this.add.circle(x, y, 20 * UI_SCALE, 0xffff00);
+  private createHitEffect(x: number, y: number, radiusMul = 1): void {
+    const effect = this.add.circle(x, y, 20 * UI_SCALE * radiusMul, 0xffff00);
     effect.setAlpha(0.7);
     
     this.tweens.add({
@@ -1066,8 +1235,9 @@ export class GameScene extends Phaser.Scene {
     const rowHeight = fontPx(28); // компактные строки (панель растёт с числом строк)
     const genBtnH = fontPx(48);
     const padBottom = padPx(16);
-    // 9 строк спавна/генерации/силы бога + 8 строк баланса стихий/заряда + строка сбросов
-    const rowCount = 18;
+    // 9 строк спавна/генерации/силы бога + 8 строк баланса стихий/заряда
+    // + 2 строки длительности стихий/статуса + строка сбросов
+    const rowCount = 20;
     const panelHeight = headerH + rowCount * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(padPx(20), screenHeight * 0.06));
@@ -1294,6 +1464,23 @@ export class GameScene extends Phaser.Scene {
       () => `${GameConfig.earth.bitesPerCell}`
     );
 
+    // --- Эффекты стихий (Итерация 4): длительность зоны Огонь/Вода/Воздух ---
+    // Одна ручка на три стихии; конфиг остаётся per-element (duration) для
+    // будущей раздельной прокачки времени каждой стихии
+    addRow('Длительность стихий, с',
+      () => { this.setElementDurations(GameConfig.elements.fire.duration - 1); },
+      () => { this.setElementDurations(GameConfig.elements.fire.duration + 1); },
+      () => `${GameConfig.elements.fire.duration}`
+    );
+
+    // Длительность статуса «мокрый»/«сдутый» после выхода из зоны
+    // (вода/воздух). Конфиг per-element для будущей раздельной прокачки
+    addRow('Длительность статуса, с',
+      () => { this.setStatusDuration(GameConfig.elements.water.wetDuration - 1); },
+      () => { this.setStatusDuration(GameConfig.elements.water.wetDuration + 1); },
+      () => `${GameConfig.elements.water.wetDuration}`
+    );
+
     // Кнопки сброса (в одну строку): силы и параметры генерации
     const rstY = y + padPx(4);
     const btnHw = (panelWidth - 28 - 8) / 2;
@@ -1381,6 +1568,10 @@ export class GameScene extends Phaser.Scene {
       earth: {
         bitesPerCell: GameConfig.earth.bitesPerCell
       },
+      effects: {
+        duration: GameConfig.elements.fire.duration,
+        statusDuration: GameConfig.elements.water.wetDuration ?? 5
+      },
       elements
     };
   }
@@ -1430,6 +1621,13 @@ export class GameScene extends Phaser.Scene {
     if (snap.earth && typeof snap.earth.bitesPerCell === 'number') {
       GameConfig.earth.bitesPerCell = Math.max(1, Math.round(snap.earth.bitesPerCell));
     }
+
+    if (snap.effects && typeof snap.effects.duration === 'number') {
+      this.setElementDurations(snap.effects.duration);
+    }
+    if (snap.effects && typeof snap.effects.statusDuration === 'number') {
+      this.setStatusDuration(snap.effects.statusDuration);
+    }
   }
 
   /** Сохранение текущего тюнинга в localStorage */
@@ -1444,6 +1642,22 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < children.length; i++) {
       (children[i] as any).setScale(s);
     }
+  }
+
+  /** Одинаковая длительность зоны Огонь/Вода/Воздух (будущая раздельная прокачка) */
+  private setElementDurations(value: number): void {
+    const d = Phaser.Math.Clamp(value, 1, 30);
+    GameConfig.elements.fire.duration = d;
+    GameConfig.elements.water.duration = d;
+    GameConfig.elements.air.duration = d;
+  }
+
+  /** Одинаковая длительность статуса «мокрый»/«сдутый» (будущая раздельная) */
+  private setStatusDuration(value: number): void {
+    const d = Phaser.Math.Clamp(value, 0, 30);
+    GameConfig.elements.water.wetDuration = d;
+    GameConfig.elements.air.airDuration = d;
+    this.syncFluidParams();
   }
 
   /** Новый seed и полный перезапуск сцены с новой генерацией уровня */
@@ -1573,6 +1787,7 @@ export class GameScene extends Phaser.Scene {
     if (restoreHealth) {
       this.baseHealth = this.baseMaxHealth;
     }
+    this.updateBaseHealthFill();
     // Заряд силы бога не переносится на новый уровень
     this.godPower.reset();
     this.godIcon?.redraw();

@@ -53,22 +53,36 @@ export const GameConfig = {
     fire: {
       color: 0xff5500,
       damage: 5,
-      duration: 2.0,
+      duration: 5.0,
       radius: 25,
       cost: 10,
       capacity: 20,
       gainPerKill: 2,
-      costPerUse: 8
+      costPerUse: 8,
+      // Эффект «горение» (Итерация 4): горит, пока существует зона огня.
+      // Монстр в огне поджигается, умирает после burnDuration в огне.
+      // При смерти — минимальный поджог соседей (шанс spreadChance, лимит
+      // maxIgnitePerDeath); ожидаемое поджигов < 1 — цепь субкритична
+      burnDuration: 2.0,
+      burnRadius: 40,
+      spreadChance: 0.2,
+      maxIgnitePerDeath: 2
     },
     water: {
       color: 0x0066ff,
       damage: 3,
-      duration: 3.0,
+      duration: 5.0,
       radius: 25,
       cost: 8,
       capacity: 20,
       gainPerKill: 2,
-      costPerUse: 8
+      costPerUse: 8,
+      // Эффект «замедление» (Итерация 4): скорость × slowFactor в зоне,
+      // пока зона воды существует (статус Мокрый — голубой); после выхода
+      // из воды монстр остаётся мокрым wetDuration с (замедление держится).
+      // 0.3 — заметное замедление (слабее «почти стоп», сильнее половины)
+      slowFactor: 0.3,
+      wetDuration: 5.0
     },
     earth: {
       color: 0x8b4513,
@@ -83,12 +97,18 @@ export const GameConfig = {
     air: {
       color: 0x87ceeb,
       damage: 2,
-      duration: 1.5,
+      duration: 5.0,
       radius: 25,
       cost: 6,
       capacity: 20,
       gainPerKill: 2,
-      costPerUse: 8
+      costPerUse: 8,
+      // Эффект «отброс» (Итерация 4): сдувает монстров, вошедших в зону,
+      // пока зона существует; направление — вектор жеста, сила pushStrength.
+      // После выхода монстр сохраняет инерцию (дрейф затухает постепенно),
+      // статус «сдутый» держится airDuration с
+      pushStrength: 2.0,
+      airDuration: 5.0
     }
   },
 
@@ -290,6 +310,15 @@ export interface ElementConfig {
   capacity: number;   // Ёмкость маны алтаря (потолок накопления)
   gainPerKill: number; // Порция маны алтарю за одного убитого монстра
   costPerUse: number; // Стоимость одного штриха
+  // Эффекты (Итерация 4) — только для соответствующих стихий
+  burnDuration?: number;   // Секунд горения до смерти (fire)
+  burnRadius?: number;     // Радиус цепного поджога, css-px (fire)
+  spreadChance?: number;   // Шанс заражения соседа (fire)
+  maxIgnitePerDeath?: number; // Лимит поджигов за одну смерть (fire)
+  slowFactor?: number;     // Доля скорости в зоне воды (water)
+  wetDuration?: number;    // Секунд статуса «мокрый» после выхода (water)
+  pushStrength?: number;   // Сила отброса воздуха, px/подшаг (air)
+  airDuration?: number;    // Секунд статуса «сдутый» после выхода (air)
 }
 export type BuildingType = 'mana_generator' | 'defense_tower' | 'research_center';
 export type ResourceType = 'mana' | 'gold' | 'wood';

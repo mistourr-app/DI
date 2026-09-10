@@ -19,9 +19,11 @@ import {
   type FrameMsg,
   type FluidWorld,
   type DispOut,
-  blockedAt,
+  blockedByLevel,
   isBoxBlocked,
   isBoxEarth,
+  waterAt,
+  airAt,
   moveDownStep
 } from './fluidProtocol';
 
@@ -68,6 +70,12 @@ const avoidSweep = new Int32Array(MAX_AGENTS);
 /** Подшаги свободной вертикали подряд в полёте (подтверждение просвета) */
 const avoidHover = new Int32Array(MAX_AGENTS);
 
+/** Остаток статуса «мокрый», сек (Итерация 4): замедление держится после воды */
+const wetRemain = new Float32Array(MAX_AGENTS);
+/** Инерция от воздуха, px/подшаг: сдувает и затухает после выхода из зоны */
+const driftX = new Float32Array(MAX_AGENTS);
+const driftY = new Float32Array(MAX_AGENTS);
+
 /**
  * Фейлсейф: агент без прогресса вниз этот число подшагов возвращается
  * на спавн. Легитимный обход ширины поля занимает ~800 подшагов
@@ -77,6 +85,15 @@ const avoidHover = new Int32Array(MAX_AGENTS);
 const STALL_SUBSTEPS = 1500;
 const stallCnt = new Int32Array(MAX_AGENTS);
 const bestY = new Float32Array(MAX_AGENTS);
+
+/** Отклик дрейфа на ветер (в зоне воздуха): доля за подшаг */
+const AIR_RESPONSE = 0.35;
+/** Затухание дрейфа вне зоны воздуха: доля остатка за подшаг.
+ *  ~0.97 за подшаг (~0.16/сек) — буст сохраняется и плавно затухает
+ *  до дефолтной скорости ~2.5 с, а не обрывается сразу */
+const AIR_DAMP = 0.97;
+/** Квадрат минимального дрейфа, ниже которого не сносим (px^2) */
+const MIN_DRIFT_SQ = 0.0025;
 
 /** Скретч для id агентов, достигших базы за шаг */
 const arrivedScratch = new Int32Array(MAX_AGENTS);
@@ -130,9 +147,7 @@ function killSlot(slot: number): void {
     alive[slot] = 0;
     freeList[freeTop++] = slot;
   }
-}
-
-/**
+}/**
  * Возврат агента на спавн (над верхней кромкой). Фейлсейф прогресса И
  * спасение погребённых после регенерации уровня (слайдеры генерации):
  * телепорт вместо «копания вверх» сквозь препятствия.
@@ -146,6 +161,9 @@ function respawnToSpawn(slot: number): void {
   avoidFail[slot] = 0;
   avoidSweep[slot] = 0;
   avoidHover[slot] = 0;
+  wetRemain[slot] = 0;
+  driftX[slot] = 0;
+  driftY[slot] = 0;
   bestY[slot] = py[slot];
   stallCnt[slot] = 0;
 }
@@ -169,9 +187,10 @@ function integrate(arrivedBase: number): number {
   for (let s = 0; s < MAX_AGENTS; s++) {
     if (!alive[s]) continue;
 
-    // Погребён внутри блоба (уровень пересобран слайдерами) — телепорт
-    // на спавн вместо копания вверх сквозь препятствия
-    if (blockedAt(field, px[s], py[s])) {
+    // Погребён внутри ПРЕПЯТСТВИЯ уровня (пересобран слайдерами) — телепорт
+    // на спавн вместо копания вверх сквозь препятствия. Земля (барьер игрока)
+    // НЕ телепортирует: накрытые землёй монстры гибнут, грызя ячейки (ниже)
+    if (blockedByLevel(field, px[s], py[s])) {
       respawnToSpawn(s);
       continue;
     }
@@ -179,6 +198,18 @@ function integrate(arrivedBase: number): number {
     const p = { x: px[s], y: py[s] };
     const v = { x: vx[s], y: vy[s] };
     const hitR = Math.max(4, rad[s] * 0.6);
+
+    // Эффект воды (Итерация 4): в зоне замедления скорость агента
+    // масштабируется slowFactor; после выхода из воды «мокрый» (и
+    // замедление) держится wetDuration секунд — лингер по времени
+    if (waterAt(field, px[s], py[s])) {
+      wetRemain[s] = params.wetDuration;
+    } else if (wetRemain[s] > 0) {
+      wetRemain[s] -= SUBSTEP_DT;
+    }
+    const ts = (waterAt(field, px[s], py[s]) || wetRemain[s] > 0)
+      ? targetSpeed * params.waterSlowFactor
+      : targetSpeed;
 
     // Земля-барьер (Итерация 2): если хитбокс агента касается земли —
     // стоп (без обхода/всплытия), агент атакует: id в attacksScratch,
@@ -202,7 +233,7 @@ function integrate(arrivedBase: number): number {
       sweep: avoidSweep[s],
       hover: avoidHover[s]
     };
-    moveDownStep(field, p, v, hitR, avoidRef, targetSpeed);
+    moveDownStep(field, p, v, hitR, avoidRef, ts);
     avoidDir[s] = avoidRef.value;
     avoidFail[s] = avoidRef.failStreak;
     avoidSweep[s] = avoidRef.sweep;
@@ -212,6 +243,39 @@ function integrate(arrivedBase: number): number {
     py[s] = p.y;
     vx[s] = v.x;
     vy[s] = v.y;
+
+    // Эффект воздуха (Итерация 4): инерция. В зоне дрейф стремится к
+    // направлению ветра × pushStrength; вне зоны — экспоненциально
+    // затухает (монстр сохраняет инерцию и тормозит постепенно).
+    // Смещение — с осевым скольжением по коллизиям (семантика Pass A).
+    const wind = airAt(field, px[s], py[s]);
+    if (wind) {
+      // В зоне ветра: быстрый отклик к целевому дрейфу (разгон)
+      const wtx = wind.x * params.airPushStrength;
+      const wty = wind.y * params.airPushStrength;
+      driftX[s] += (wtx - driftX[s]) * AIR_RESPONSE;
+      driftY[s] += (wty - driftY[s]) * AIR_RESPONSE;
+    } else {
+      // Вне зоны: СОХРАНЯЕМ долю дрейфа (AIR_DAMP), а не (1 - AIR_DAMP) —
+      // иначе буст испарялся бы мгновенно (drift *= 0.03/подшаг)
+      driftX[s] *= AIR_DAMP;
+      driftY[s] *= AIR_DAMP;
+    }
+    const d2 = driftX[s] * driftX[s] + driftY[s] * driftY[s];
+    if (d2 > MIN_DRIFT_SQ) {
+      const nx = px[s] + driftX[s];
+      const ny = py[s] + driftY[s];
+      if (!isBoxBlocked(field, nx, ny, hitR)) {
+        px[s] = nx;
+        py[s] = ny;
+      } else if (!isBoxBlocked(field, nx, py[s], hitR)) {
+        px[s] = nx;
+      } else if (!isBoxBlocked(field, px[s], ny, hitR)) {
+        py[s] = ny;
+      }
+      vx[s] += driftX[s];
+      vy[s] += driftY[s];
+    }
 
     // Боковые границы поля боя (верхний клэмп отсутствует намеренно)
     if (px[s] < 10) {
@@ -250,9 +314,18 @@ function integrate(arrivedBase: number): number {
   for (let s = 0; s < MAX_AGENTS; s++) {
     if (!alive[s]) continue;
     fluidDisplacement(fluidWorld, s, dispScratch);
-    const dx = dispScratch.x;
-    const dy = dispScratch.y;
+    let dx = dispScratch.x;
+    let dy = dispScratch.y;
     if (dx === 0 && dy === 0) continue;
+
+    // Вода (Итерация 4): мокрый агент слабее поддаётся силам жидкости —
+    // иначе толпа «проталкивает» его на полной скорости и маскирует
+    // замедление (measured: мокрый шёл 61% вместо ~30%).
+    const wet = wetRemain[s] > 0;
+    if (wet) {
+      dx *= params.waterSlowFactor;
+      dy *= params.waterSlowFactor;
+    }
 
     const hitR = Math.max(4, rad[s] * 0.6);
     const nx = px[s] + dx;
@@ -303,7 +376,10 @@ ctx.onmessage = (e: { data: unknown }) => {
         cellSize: msg.cellSize,
         blocked: new Uint8Array(msg.blocked),
         widthPx: msg.widthPx,
-        earth: new Uint8Array(msg.cols * msg.rows) // земля обнуляется при новом уровне
+        earth: new Uint8Array(msg.cols * msg.rows), // земля обнуляется при новом уровне
+        water: new Uint8Array(msg.cols * msg.rows), // эффекты тоже сбрасываются
+        airX: new Float32Array(msg.cols * msg.rows),
+        airY: new Float32Array(msg.cols * msg.rows)
       };
       attackCount = 0;
       break;
@@ -315,6 +391,28 @@ ctx.onmessage = (e: { data: unknown }) => {
       for (let i = 0; i < cells.length; i++) {
         const c = cells[i];
         if (c >= 0 && c < field.earth.length) field.earth[c] = msg.value;
+      }
+      break;
+    }
+
+    case 'set_effects': {
+      // Вода/воздух: оверлеи эффектов стихий (Итерация 4)
+      if (msg.effect === 'water') {
+        if (!field?.water) break;
+        const cells = new Int32Array(msg.cells);
+        for (let i = 0; i < cells.length; i++) {
+          const c = cells[i];
+          if (c >= 0 && c < field.water.length) field.water[c] = msg.value;
+        }
+      } else if (msg.effect === 'air') {
+        if (!field?.airX || !field?.airY) break;
+        const cells = new Int32Array(msg.cells);
+        for (let i = 0; i < cells.length; i++) {
+          const c = cells[i];
+          if (c < 0 || c >= field.airX.length) continue;
+          field.airX[c] = msg.value ? (msg.dirX ?? 0) : 0;
+          field.airY[c] = msg.value ? (msg.dirY ?? 0) : 0;
+        }
       }
       break;
     }
@@ -335,6 +433,9 @@ ctx.onmessage = (e: { data: unknown }) => {
       avoidFail[slot] = 0;
       avoidSweep[slot] = 0;
       avoidHover[slot] = 0;
+      wetRemain[slot] = 0;
+      driftX[slot] = 0;
+      driftY[slot] = 0;
       bestY[slot] = msg.y;
       stallCnt[slot] = 0;
       break;

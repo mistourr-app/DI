@@ -50,8 +50,8 @@ export class ElementDrawer {
   private scene: Phaser.Scene;
   /** Коллизия в МИРОВЫХ координатах: true — точка на препятствии */
   private isBlocked: (x: number, y: number) => boolean;
-  /** Земля-штрих: отдаёт нарисованный путь (сцена превращает его в барьер) */
-  private onEarthStroke: ((points: StrokePoint[]) => void) | null;
+  /** Штрих завершён: отдаёт стихию и путь (сцена применяет эффект) */
+  private onStroke: ((key: ElementType, points: StrokePoint[]) => void) | null;
 
   private pool: DotPool;
   private strokeActive = false;
@@ -84,11 +84,11 @@ export class ElementDrawer {
   constructor(
     scene: Phaser.Scene,
     isBlocked: (x: number, y: number) => boolean,
-    onEarthStroke: ((points: StrokePoint[]) => void) | null = null
+    onStroke: ((key: ElementType, points: StrokePoint[]) => void) | null = null
   ) {
     this.scene = scene;
     this.isBlocked = isBlocked;
-    this.onEarthStroke = onEarthStroke;
+    this.onStroke = onStroke;
     this.pool = new DotPool(scene);
   }
 
@@ -251,17 +251,8 @@ export class ElementDrawer {
     this.strokeSprites = [];
 
     if (key === 'earth') {
-      // Земля-барьер (Итерация 2): путь отдаётся сцене -> EarthBarrierSystem
-      // растеризует его в ячейки; точки-спрайты штриха больше не нужны
-      const flat = this.paintedPts;
-      const pts: StrokePoint[] = new Array(flat.length / 2);
-      for (let i = 0, j = 0; i < flat.length; i += 2, j++) {
-        pts[j] = { x: flat[i], y: flat[i + 1] };
-      }
+      // Земля-барьер: спрайты штриха больше не нужны (ячейки рисует сцена)
       this.pool.releaseAll(sprites);
-      if (this.onEarthStroke) {
-        this.onEarthStroke(pts);
-      }
     } else {
       // Вода/Огонь/Воздух: плавно исчезает за duration мс с момента отпускания
       const duration = Math.max(1, this.cfg.duration * 1000);
@@ -281,6 +272,16 @@ export class ElementDrawer {
           }
         }
       });
+    }
+
+    // Сцена применяет эффект стихии (Земля -> барьер, прочие -> эффекты)
+    const flat = this.paintedPts;
+    const pts: StrokePoint[] = new Array(flat.length / 2);
+    for (let i = 0, j = 0; i < flat.length; i += 2, j++) {
+      pts[j] = { x: flat[i], y: flat[i + 1] };
+    }
+    if (this.onStroke) {
+      this.onStroke(key, pts);
     }
 
     this.resetStroke();

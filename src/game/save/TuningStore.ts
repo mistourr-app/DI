@@ -32,6 +32,10 @@ export interface TuningSnapshot {
   earth: {
     bitesPerCell: number;
   };
+  effects: {
+    duration: number;
+    statusDuration: number;
+  };
   elements: Record<ElementType, ElementTuning>;
 }
 

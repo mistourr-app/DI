@@ -241,6 +241,11 @@ export interface FluidParams {
   separation: number;
   cohesion: number;
   alignment: number;
+  // Эффекты стихий (Итерация 4)
+  waterSlowFactor: number; // доля скорости агента в зоне воды (0..1)
+  airPushStrength: number; // сила отброса воздуха, px/подшаг
+  wetDuration: number;     // секунд «мокрый» (и замедление) после выхода из воды
+  airDuration: number;     // секунд «сдутый» после выхода из воздуха
 }
 
 export function defaultFluidParams(): FluidParams {
@@ -252,7 +257,11 @@ export function defaultFluidParams(): FluidParams {
     viscosity: 0.01,
     separation: 1.5,
     cohesion: 0.5,
-    alignment: 0.3
+    alignment: 0.3,
+    waterSlowFactor: 0.5,
+    airPushStrength: 1.5,
+    wetDuration: 5,
+    airDuration: 5
   };
 }
 
@@ -266,6 +275,11 @@ export interface CollisionField {
   widthPx?: number;
   /** Земля-барьер (Итерация 2): 1 = ячейка земли; обновляется set_earth */
   earth?: Uint8Array;
+  /** Эффект воды (Итерация 4): 1 = ячейка замедления; обновляется set_effects */
+  water?: Uint8Array;
+  /** Эффект воздуха (Итерация 4): направление отброса по ячейке (0 = нет) */
+  airX?: Float32Array;
+  airY?: Float32Array;
 }
 
 // ------------------------------------------------------------
@@ -326,6 +340,16 @@ export interface SetEarthMsg {
   value: 0 | 1;       // 1 = добавить землю, 0 = убрать
 }
 
+/** Эффекты стихий-физики (Итерация 4): вода-замедление, воздух-отброс */
+export interface SetEffectsMsg {
+  type: 'set_effects';
+  effect: 'water' | 'air';
+  cells: ArrayBuffer; // Int32Array(flat cell indices), transferable
+  value: 0 | 1;       // 1 = включить эффект, 0 = выключить
+  dirX?: number;      // воздух: направление отброса (нормализованное)
+  dirY?: number;
+}
+
 export type WorkerCommand =
   | InitMsg
   | SetLevelMsg
@@ -333,7 +357,8 @@ export type WorkerCommand =
   | RemoveAgentMsg
   | StepMsg
   | SetParamsMsg
-  | SetEarthMsg;
+  | SetEarthMsg
+  | SetEffectsMsg;
 
 // ------------------------------------------------------------
 // Сообщения worker -> main
@@ -384,6 +409,19 @@ export function earthAt(field: CollisionField, lx: number, ly: number): boolean 
   return field.earth[cy * field.cols + cx] === 1;
 }
 
+/**
+ * Занята ли точка ПРЕПЯТСТВИЕМ УРОВНЯ (без земли). Вне сетки — свободно.
+ * Для «телепорта на спавн» при регенерации: земля (барьер игрока) не должна
+ * телепортировать монстров — накрытые землёй гибнут, грызя ячейки.
+ */
+export function blockedByLevel(field: CollisionField, lx: number, ly: number): boolean {
+  const cx = Math.floor(lx / field.cellSize);
+  const cy = Math.floor(ly / field.cellSize);
+  if (cx < 0 || cy < 0 || cx >= field.cols || cy >= field.rows) return false;
+  if (field.widthPx !== undefined && lx >= field.widthPx) return false;
+  return field.blocked[cy * field.cols + cx] === 1;
+}
+
 /** Касается ли прямоугольник вокруг точки земли (4 угла) */
 export function isBoxEarth(field: CollisionField, lx: number, ly: number, r: number): boolean {
   return (
@@ -392,6 +430,34 @@ export function isBoxEarth(field: CollisionField, lx: number, ly: number, r: num
     earthAt(field, lx - r, ly + r) ||
     earthAt(field, lx + r, ly + r)
   );
+}
+
+/** Эффект воды: замедляет ли точка (Итерация 4). Вне сетки — нет. */
+export function waterAt(field: CollisionField, lx: number, ly: number): boolean {
+  if (!field.water) return false;
+  const cx = Math.floor(lx / field.cellSize);
+  const cy = Math.floor(ly / field.cellSize);
+  if (cx < 0 || cy < 0 || cx >= field.cols || cy >= field.rows) return false;
+  if (field.widthPx !== undefined && lx >= field.widthPx) return false;
+  return field.water[cy * field.cols + cx] === 1;
+}
+
+/** Эффект воздуха: направление отброса в точке, или null вне зоны (Итерация 4) */
+export function airAt(
+  field: CollisionField,
+  lx: number,
+  ly: number
+): { x: number; y: number } | null {
+  if (!field.airX || !field.airY) return null;
+  const cx = Math.floor(lx / field.cellSize);
+  const cy = Math.floor(ly / field.cellSize);
+  if (cx < 0 || cy < 0 || cx >= field.cols || cy >= field.rows) return null;
+  if (field.widthPx !== undefined && lx >= field.widthPx) return null;
+  const i = cy * field.cols + cx;
+  const x = field.airX[i];
+  const y = field.airY[i];
+  if (x === 0 && y === 0) return null;
+  return { x, y };
 }
 
 /** Хитбокс-прямоугольник из 4 углов вокруг центра */

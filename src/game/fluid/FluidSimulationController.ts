@@ -151,6 +151,24 @@ export class FluidSimulationController {
   }
 
   /**
+   * Добавить/убрать эффект стихии-физики (Итерация 4): вода — замедление,
+   * воздух — отброс в направлении dirX/dirY. cells — плоские индексы ячеек.
+   */
+  setEffects(
+    effect: 'water' | 'air',
+    cells: Int32Array,
+    value: 0 | 1,
+    dirX?: number,
+    dirY?: number
+  ): void {
+    if (!this.isWorkerMode || cells.length === 0) return;
+    this.post(
+      { type: 'set_effects', effect, cells: cells.buffer, value, dirX, dirY },
+      [cells.buffer]
+    );
+  }
+
+  /**
    * Вызывается каждый кадр сцены. Отправляет 'step' только когда
    * предыдущий кадр обработан и есть свободный буфер.
    * @param dt дельта кадра в секундах
