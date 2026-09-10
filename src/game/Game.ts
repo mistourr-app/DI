@@ -8,6 +8,10 @@ export class Game {
   async start(): Promise<void> {
     const w = Math.max(1, Math.round(window.innerWidth * UI_SCALE));
     const h = Math.max(1, Math.round(window.innerHeight * UI_SCALE));
+    // Точный подгон: канвас занимает ровно всё окно (CSS-размер = w * zoom).
+    // zoom = 1/UI_SCALE округлениями даёт щели до пикселя по краям на мобильных —
+    // берём zoom от фактической ширины канваса, чтобы CSS-ширина = innerWidth.
+    const zoom = window.innerWidth / w;
 
     const config: Phaser.Types.Core.GameConfig = {
       type: Phaser.WEBGL,
@@ -20,7 +24,7 @@ export class Game {
         autoCenter: Phaser.Scale.CENTER_BOTH,
         width: w,
         height: h,
-        zoom: 1 / UI_SCALE
+        zoom
       },
       scene: [GameScene],
       physics: {
@@ -43,11 +47,10 @@ export class Game {
   private handleWindowResize = (): void => {
     const g = this.phaserGame;
     if (!g) return;
-    g.scale.resize(
-      Math.max(1, Math.round(window.innerWidth * UI_SCALE)),
-      Math.max(1, Math.round(window.innerHeight * UI_SCALE))
-    );
-    g.scale.setZoom(1 / UI_SCALE);
+    const w = Math.max(1, Math.round(window.innerWidth * UI_SCALE));
+    const h = Math.max(1, Math.round(window.innerHeight * UI_SCALE));
+    g.scale.resize(w, h);
+    g.scale.setZoom(window.innerWidth / w);
     g.scale.refresh();
   };
 

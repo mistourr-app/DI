@@ -31,8 +31,8 @@ export class GameScene extends Phaser.Scene {
   private battlefieldZone!: Phaser.Geom.Rectangle;
   private baseZone!: Phaser.Geom.Rectangle;
   private gameArea!: Phaser.Geom.Rectangle;
-  private battlefieldGraphics!: Phaser.GameObjects.Graphics;
-  private baseZoneGraphics!: Phaser.GameObjects.Graphics;
+  /** Статичный фон (чёрный экран + поле боя + зона базы + разделитель) одним объектом */
+  private zoneGraphics!: Phaser.GameObjects.Graphics;
   
   // Настройки спавна врагов
   private currentLevel: number = 1;          // Текущий уровень (1..MAX_LEVEL)
@@ -245,8 +245,7 @@ export class GameScene extends Phaser.Scene {
     // Перегенерация уровня под новый размер с тем же seed
     this.generateLevel();
 
-    if (this.battlefieldGraphics) this.battlefieldGraphics.destroy();
-    if (this.baseZoneGraphics) this.baseZoneGraphics.destroy();
+    if (this.zoneGraphics) this.zoneGraphics.destroy();
 
     this.createZoneVisuals();
 
@@ -315,16 +314,19 @@ export class GameScene extends Phaser.Scene {
     const screenWidth = this.cameras.main.width;
     const screenHeight = this.cameras.main.height;
 
+    // Весь статичный фон — ОДИН Graphics (один draw call вместо пяти):
+    // чёрный фон для арта окружения, игровое поле, поле боя, зона базы,
+    // разделительная линия. Порядок команд = порядок слоёв.
+    const g = this.add.graphics();
+
     // 1. Чёрный фон на ВЕСЬ экран (для арта окружения)
-    const background = this.add.graphics();
-    background.fillStyle(0x000000, 1);
-    background.fillRect(0, 0, screenWidth, screenHeight);
+    g.fillStyle(0x000000, 1);
+    g.fillRect(0, 0, screenWidth, screenHeight);
 
     // 2. Игровое поле (9:19.5)
     if (this.gameArea) {
-      const gameAreaGraphics = this.add.graphics();
-      gameAreaGraphics.fillStyle(0x1a1a2e, 1);
-      gameAreaGraphics.fillRect(
+      g.fillStyle(0x1a1a2e, 1);
+      g.fillRect(
         this.gameArea.x,
         this.gameArea.y,
         this.gameArea.width,
@@ -333,9 +335,8 @@ export class GameScene extends Phaser.Scene {
     }
 
     // 3. Поле боя
-    this.battlefieldGraphics = this.add.graphics();
-    this.battlefieldGraphics.fillStyle(GameScene.COLOR_BATTLEFIELD_BG, 1);
-    this.battlefieldGraphics.fillRect(
+    g.fillStyle(GameScene.COLOR_BATTLEFIELD_BG, 1);
+    g.fillRect(
       this.battlefieldZone.x,
       this.battlefieldZone.y,
       this.battlefieldZone.width,
@@ -343,9 +344,8 @@ export class GameScene extends Phaser.Scene {
     );
 
     // 4. Зона базы
-    this.baseZoneGraphics = this.add.graphics();
-    this.baseZoneGraphics.fillStyle(GameScene.COLOR_BASE_BG, 1);
-    this.baseZoneGraphics.fillRect(
+    g.fillStyle(GameScene.COLOR_BASE_BG, 1);
+    g.fillRect(
       this.baseZone.x,
       this.baseZone.y,
       this.baseZone.width,
@@ -353,12 +353,13 @@ export class GameScene extends Phaser.Scene {
     );
 
     // 5. Разделительная линия между полем боя и базой
-    const divider = this.add.graphics();
-    divider.lineStyle(1 * UI_SCALE, 0x00ffff, 0.3);
-    divider.beginPath();
-    divider.moveTo(this.baseZone.x, this.baseZone.y);
-    divider.lineTo(this.baseZone.x + this.baseZone.width, this.baseZone.y);
-    divider.strokePath();
+    g.lineStyle(1 * UI_SCALE, 0x00ffff, 0.3);
+    g.beginPath();
+    g.moveTo(this.baseZone.x, this.baseZone.y);
+    g.lineTo(this.baseZone.x + this.baseZone.width, this.baseZone.y);
+    g.strokePath();
+
+    this.zoneGraphics = g;
   }
   
   private createBase(): void {
