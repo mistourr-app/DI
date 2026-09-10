@@ -57,7 +57,7 @@ export const GameConfig = {
       radius: 25,
       cost: 10,
       capacity: 20,
-      gainPerKill: 2,
+      gainPerKill: 0.3,
       costPerUse: 7,
       // Эффект «горение» (Итерация 4): горит, пока существует зона огня.
       // Монстр в огне поджигается, умирает после burnDuration в огне.
@@ -75,7 +75,7 @@ export const GameConfig = {
       radius: 25,
       cost: 8,
       capacity: 20,
-      gainPerKill: 2,
+      gainPerKill: 0.3,
       costPerUse: 7,
       // Эффект «замедление» (Итерация 4): скорость × slowFactor в зоне,
       // пока зона воды существует (статус Мокрый — голубой); после выхода
@@ -91,7 +91,7 @@ export const GameConfig = {
       radius: 25,
       cost: 12,
       capacity: 20,
-      gainPerKill: 2,
+      gainPerKill: 0.3,
       costPerUse: 8
     },
     air: {
@@ -101,7 +101,7 @@ export const GameConfig = {
       radius: 25,
       cost: 6,
       capacity: 20,
-      gainPerKill: 2,
+      gainPerKill: 0.3,
       costPerUse: 7,
       // Эффект «отброс» (Итерация 4): сдувает монстров, вошедших в зону,
       // пока зона существует; направление — вектор жеста, сила pushStrength.
