@@ -502,10 +502,10 @@ export class GameScene extends Phaser.Scene {
     if (!this.debugText || !this.gameArea) return;
     this.debugText.setPosition(this.gameArea.x + 8 * UI_SCALE, this.gameArea.y + 4 * UI_SCALE);
 
-    // Самая длинная строка панели ~38 символов; моноширинный глиф ~0.62 кегля
+    // Самая длинная строка панели ~40 символов; моноширинный глиф ~0.62 кегля
     const avail = this.gameArea.width - 16 - 52;
     let size = DEBUG_FONT_MAX;
-    while (size > DEBUG_FONT_MIN && size * 0.62 * 38 > avail) size--;
+    while (size > DEBUG_FONT_MIN && size * 0.62 * 40 > avail) size--;
 
     if (size !== this.debugFontSize) {
       this.debugFontSize = size;
@@ -672,6 +672,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(): void {
+    // Диагностика: реальная длительность кадра (rAF-период, вкл. рендер)
+    const now = performance.now();
+    if (this.frameStartMs > 0) {
+      const frame = now - this.frameStartMs;
+      this.frameMs = this.frameMs === 0 ? frame : this.frameMs * 0.9 + frame * 0.1;
+    }
+    this.frameStartMs = now;
+    this.updateStartMs = now;
+
     // Обновляем таймер спавна
     this.spawnTimer += this.game.loop.delta; // delta в мс
     
@@ -712,6 +721,10 @@ export class GameScene extends Phaser.Scene {
       this.victoryShown = true;
       this.showVictory();
     }
+
+    // Диагностика: длительность update() (скрипт main-потока, без рендера)
+    const upd = performance.now() - this.updateStartMs;
+    this.updateMs = this.updateMs === 0 ? upd : this.updateMs * 0.9 + upd * 0.1;
   }
 
   /**
@@ -726,6 +739,8 @@ export class GameScene extends Phaser.Scene {
     // Сглаженная метрика цены шага физики (для дебаг-панели)
     this.simStepMs = this.simStepMs === 0 ? info.stepMs : this.simStepMs * 0.9 + info.stepMs * 0.1;
 
+    // Синк позиций: мерим только цикл setPosition — главный CPU-кандидат
+    const syncT0 = performance.now();
     for (let i = 0; i < info.count; i++) {
       const o = i * OUT_STRIDE;
       const id = d[o];
@@ -733,6 +748,8 @@ export class GameScene extends Phaser.Scene {
       if (!sprite) continue;
       sprite.setPosition(ox + d[o + 1], oy + d[o + 2]);
     }
+    const syncMs = performance.now() - syncT0;
+    this.syncMs = this.syncMs === 0 ? syncMs : this.syncMs * 0.9 + syncMs * 0.1;
 
     for (let a = 0; a < info.arrivedCount; a++) {
       const id = info.arrived[a];
@@ -945,6 +962,18 @@ export class GameScene extends Phaser.Scene {
 
   private debugTextTimer: number = 0;
 
+  // --- Диагностика производительности (дебаг-панель) ---
+  /** Время начала предыдущего rAF-кадра (performance.now) */
+  private frameStartMs = 0;
+  /** Время старта текущего update() (для замера длительности) */
+  private updateStartMs = 0;
+  /** Реальная длительность кадра, вкл. рендер (EMA) */
+  private frameMs = 0;
+  /** Длительность update() — скрипт main-потока без рендера (EMA) */
+  private updateMs = 0;
+  /** Длительность цикла синка позиций из воркера (EMA) */
+  private syncMs = 0;
+
   private updateDebugInfo(): void {
     // setText растеризует текст и заливает текстуру в GPU — делаем это
     // 4 раза в секунду, а не каждый кадр
@@ -953,20 +982,22 @@ export class GameScene extends Phaser.Scene {
     this.debugTextTimer = 0;
 
     if (!this.debugText) return;
-    
-    const healthPercent = Math.round((this.baseHealth / this.baseMaxHealth) * 100);
-    
-    // Компактный текст в 4 строки (расчётная ширина ~38 символов — см. placeDebugText)
+
     const simTag = this.fluidCtrl?.isWorkerMode ? 'W' : 'M';
-    const earthCells = this.earthBarrier?.cellCount() ?? 0;
-    const strokePts = this.elementDrawer.pointCount;
+    const agents = this.spriteById.size;
+    const objects = this.sys.displayList.length;
+    // DrawCalls есть не во всех версиях Phaser — опционально
+    const renderer = this.game.renderer as any;
+    const dc = typeof renderer?.drawCount === 'number' ? renderer.drawCount : -1;
+    const dcStr = dc >= 0 ? ` | DC ${dc}` : '';
+
     this.debugText.setText([
-      `HP: ${this.baseHealth}/${this.baseMaxHealth} (${healthPercent}%)`,
-      `Ур.${this.currentLevel} | Монстры: ${this.enemyCount}/${this.maxEnemiesOnScreen}`,
-      `Sim${simTag}: ${this.simStepMs.toFixed(1)}мс | Всего: ${this.enemiesSpawned} | FPS: ${Math.round(this.game.loop.actualFps)}`,
-      `Земля: ${earthCells} | Штрих: ${strokePts}`
+      `FPS ${Math.round(this.game.loop.actualFps)} | Кадр ${this.frameMs.toFixed(1)}мс | Обн ${this.updateMs.toFixed(1)}мс`,
+      `Sim${simTag} ${this.simStepMs.toFixed(1)}мс | Синк ${this.syncMs.toFixed(1)}мс`,
+      `Агенты ${agents} | Объекты ${objects}${dcStr}`,
+      `Земля ${this.earthBarrier?.cellCount() ?? 0} | Штрих ${this.elementDrawer.pointCount}`
     ]);
-    
+
     // Позиционируем текст у верхнего края экрана
     this.placeDebugText();
   }
