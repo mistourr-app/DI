@@ -1435,10 +1435,10 @@ export class GameScene extends Phaser.Scene {
     const screenHeight = this.cameras.main.height;
 
     const panelWidth = Math.min(fontPx(340), screenWidth * 0.92);
-    const headerH = fontPx(46);
-    const rowHeight = fontPx(28); // компактные строки (панель растёт с числом строк)
-    const genBtnH = fontPx(48);
-    const padBottom = padPx(16);
+    const headerH = fontPx(38);
+    const rowHeight = fontPx(26); // компактные строки (панель растёт с числом строк)
+    const genBtnH = fontPx(34);
+    const padBottom = padPx(12);
     // 6 строк уровня/скорости/генерации/силы бога + 8 строк баланса стихий/заряда
     // + 3 строки длительности стихий/статуса/дебага + строка сбросов
     const rowCount = 18;
@@ -1671,9 +1671,9 @@ export class GameScene extends Phaser.Scene {
       () => (this.debugPanelEnabled ? 'Вкл' : 'Выкл')
     );
 
-    // Кнопки сброса (в одну строку): силы и параметры генерации
+    // Кнопка сброса сил (в одну строку с «Сгенерировать уровень»)
     const rstY = y + padPx(4);
-    const btnHw = (panelWidth - 28 - 8) / 2;
+    const btnHw = panelWidth - padPx(28);
 
     const makeReset = (x: number, w: number, label: string, cb: () => void): void => {
       const bg = this.add.graphics();
@@ -1698,28 +1698,22 @@ export class GameScene extends Phaser.Scene {
       this.updatePopupValues();
       this.syncFluidParams();
     });
-    makeReset(px + padPx(22), btnHw, 'Сброс генерации', () => {
-      this.genDensity = 0.3;
-      this.genBlobScale = 1;
-      this.updatePopupValues();
-      this.generateLevel();
-    });
     y += rowHeight;
 
     // Кнопка генерации нового уровня
-    const genY = y + padPx(6);
+    const genY = y + padPx(4);
     const genBg = this.add.graphics();
     genBg.fillStyle(0x2e7d32, 1);
-    genBg.fillRoundedRect(px + padPx(14), genY, panelWidth - padPx(28), fontPx(38), padPx(8));
+    genBg.fillRoundedRect(px + padPx(14), genY, panelWidth - padPx(28), fontPx(34), padPx(8));
     popup.add(genBg);
 
-    const genLabel = this.add.text(px + panelWidth / 2, genY + fontPx(19), 'Сгенерировать уровень', {
-      font: `bold ${fontPx(14)}px Arial`,
+    const genLabel = this.add.text(px + panelWidth / 2, genY + fontPx(17), 'Сгенерировать уровень', {
+      font: `bold ${fontPx(13)}px Arial`,
       color: '#ffffff'
     }).setOrigin(0.5);
     popup.add(genLabel);
 
-    const genZone = this.add.zone(px + padPx(14), genY, panelWidth - padPx(28), fontPx(38)).setOrigin(0, 0)
+    const genZone = this.add.zone(px + padPx(14), genY, panelWidth - padPx(28), fontPx(34)).setOrigin(0, 0)
       .setInteractive({ useHandCursor: true });
     genZone.on('pointerdown', () => { this.regenerateLevelWithNewSeed(); });
     popup.add(genZone);
