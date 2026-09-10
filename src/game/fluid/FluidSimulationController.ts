@@ -19,6 +19,7 @@ const POOL_SIZE = 3;
 interface BufferTriple {
   data: ArrayBuffer;
   arrived: ArrayBuffer;
+  attacks: ArrayBuffer;
 }
 
 export interface FrameInfo {
@@ -28,6 +29,9 @@ export interface FrameInfo {
   data: Float32Array;
   /** Int32Array(arrivedCount): id агентов, достигших базы */
   arrived: Int32Array;
+  /** Int32Array(attackCount): id агентов, атакующих землю (Итерация 2) */
+  attackIds: Int32Array;
+  attackCount: number;
   stepMs: number;
 }
 
@@ -69,7 +73,8 @@ export class FluidSimulationController {
       for (let i = 0; i < POOL_SIZE; i++) {
         this.bufferPool.push({
           data: new Float32Array(MAX_AGENTS * OUT_STRIDE).buffer,
-          arrived: new Int32Array(MAX_AGENTS).buffer
+          arrived: new Int32Array(MAX_AGENTS).buffer,
+          attacks: new Int32Array(MAX_AGENTS).buffer
         });
       }
     }
@@ -137,6 +142,15 @@ export class FluidSimulationController {
   }
 
   /**
+   * Добавить/убрать ячейки земли-барьера (Итерация 2).
+   * cells — плоские индексы ячеек коллизионной сетки (передаются transferable).
+   */
+  setEarth(cells: Int32Array, value: 0 | 1): void {
+    if (!this.isWorkerMode || cells.length === 0) return;
+    this.post({ type: 'set_earth', cells: cells.buffer, value }, [cells.buffer]);
+  }
+
+  /**
    * Вызывается каждый кадр сцены. Отправляет 'step' только когда
    * предыдущий кадр обработан и есть свободный буфер.
    * @param dt дельта кадра в секундах
@@ -147,9 +161,10 @@ export class FluidSimulationController {
     if (!buf) return;
 
     this.inFlight = true;
-    this.post({ type: 'step', dt, outData: buf.data, outArrived: buf.arrived }, [
+    this.post({ type: 'step', dt, outData: buf.data, outArrived: buf.arrived, outAttacks: buf.attacks }, [
       buf.data,
-      buf.arrived
+      buf.arrived,
+      buf.attacks
     ]);
   }
 
@@ -184,10 +199,12 @@ export class FluidSimulationController {
           arrivedCount: resp.arrivedCount,
           data: new Float32Array(resp.data),
           arrived: new Int32Array(resp.arrived),
+          attackIds: new Int32Array(resp.attacks),
+          attackCount: resp.attackCount,
           stepMs: resp.stepMs
         };
         // Буферы возвращаются в пул для следующего шага
-        this.bufferPool.push({ data: resp.data, arrived: resp.arrived });
+        this.bufferPool.push({ data: resp.data, arrived: resp.arrived, attacks: resp.attacks });
 
         if (this.onFrame) {
           this.onFrame(info);

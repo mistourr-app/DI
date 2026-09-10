@@ -2,10 +2,15 @@ import Phaser from 'phaser';
 import { LevelGenerator } from '../game/generation/LevelGenerator';
 import { FluidSimulationController, type FrameInfo } from '../game/fluid/FluidSimulationController';
 import { MAX_AGENTS, OUT_STRIDE, type FluidParams } from '../game/fluid/fluidProtocol';
-import { GameConfig } from '../game/config/GameConfig';
+import { GameConfig, type ElementType } from '../game/config/GameConfig';
 import { UI_SCALE, fontPx, padPx } from '../game/config/uiScale';
 import { GodPowerSystem } from '../game/god/GodPowerSystem';
 import { GodPowerIcon } from '../game/god/GodPowerIcon';
+import { ElementManaSystem, ELEMENT_KEYS } from '../game/element/ElementManaSystem';
+import { ElementDrawer } from '../game/element/ElementDrawer';
+import { ElementAltarIcon } from '../game/element/ElementAltarIcon';
+import { EarthBarrierSystem } from '../game/element/EarthBarrierSystem';
+import { TuningStore, type TuningSnapshot } from '../game/save/TuningStore';
 
 // Радиус круга в текстуре 'enemy' (SVG 20x20, circle r=8) — для масштабирования
 const ENEMY_TEX_RADIUS = 8;
@@ -73,6 +78,15 @@ export class GameScene extends Phaser.Scene {
   private godPower = new GodPowerSystem(GameConfig.godPower);
   private godIcon: GodPowerIcon | null = null;
 
+  // Система стихий (Итерация 1): мана по алтарям + рисование слоёв
+  private elementMana = new ElementManaSystem(GameConfig.elements);
+  private elementDrawer!: ElementDrawer;
+  private altars = new Map<ElementType, ElementAltarIcon>();
+  /** Земля-барьер (Итерация 2): ячейки земли, прогрызаемые монстрами */
+  private earthBarrier!: EarthBarrierSystem;
+  /** Сколько длины уже оплачено за текущий штрих (px), для поюнитного списания */
+  private strokeChargedLen = 0;
+
   // Константы
   private static readonly BATTLEFIELD_RATIO = 5 / 6;
   private static readonly BASE_RATIO = 1 / 6;
@@ -105,6 +119,23 @@ export class GameScene extends Phaser.Scene {
     // Создаем стихии в зоне базы
     this.createElements();
 
+    // Земля-барьер: ячейки инициализируются в generateLevel() под сетку уровня
+    this.earthBarrier = new EarthBarrierSystem(this);
+
+    // Рисование стихий на поле боя (препятствия не рисуются).
+    // Земля-штрих превращается в барьер из ячеек (EarthBarrierSystem)
+    this.elementDrawer = new ElementDrawer(
+      this,
+      (x, y) => this.isBlockedWorld(x, y),
+      (points) => {
+        this.earthBarrier.addStroke(
+          points,
+          GameConfig.elements.earth.radius * UI_SCALE,
+          GameConfig.earth.bitesPerCell
+        );
+      }
+    );
+
     // Создаем группу для врагов
     this.enemies = this.add.group();
 
@@ -115,6 +146,12 @@ export class GameScene extends Phaser.Scene {
     this.spawnTimer = 0;
     this.victoryShown = false;
     this.gameOverShown = false;
+
+    // Восстановление параметров поп-апа из прошлой сессии: значения из
+    // localStorage применяются ДО генерации уровня и инициализации физики
+    // (влияют на currentLevel, ген-параметры, скорость/размер врагов)
+    this.applyStoredTuning();
+
     this.totalEnemiesToSpawn = this.currentLevel * GameScene.MONSTERS_PER_LEVEL_STEP;
 
     // Fluid simulation: воркер физики толпы (fallback — main-thread путь)
@@ -138,9 +175,10 @@ export class GameScene extends Phaser.Scene {
     // Настраиваем камеру
     this.setupCamera();
 
-    // Дебаг-хук для смоук-тестов (только в debug-сборке)
+    // Дебаг-хуки для смоук-тестов (только в debug-сборке)
     if (GameConfig.game.debug) {
       (window as any).__di = this;
+      (window as any).__gc = GameConfig;
     }
     
     // Добавляем обработчик изменения размера окна
@@ -156,6 +194,8 @@ export class GameScene extends Phaser.Scene {
       }
       this.spriteById.clear();
       this.godIcon = null;
+      this.elementDrawer?.destroy();
+      this.earthBarrier?.destroy();
     });
   }
 
@@ -210,6 +250,9 @@ export class GameScene extends Phaser.Scene {
     if (this.base) this.base.destroy();
     this.createBase();
     this.createElements();
+
+    // Нарисованные слои привязаны к старому размеру поля — сбрасываем
+    this.elementDrawer?.clearPersistent();
 
     // Пересоздаем кнопку настроек при изменении размера
     this.createSettingsButton();
@@ -331,23 +374,21 @@ export class GameScene extends Phaser.Scene {
     const zone = this.baseZone;
     const centerX = zone.x + zone.width / 2;
     const centerY = zone.y + zone.height / 2;
-    
-    // 5 элементов в ряд: Огонь, Вода, База, Земля, Воздух
-    const elements = [
-      { offset: -2, color: 0xff5500, emoji: '🔥', name: 'Огонь' },
-      { offset: -1, color: 0x0066ff, emoji: '💧', name: 'Вода' },
-      { offset: 0, color: 0x00ffff, emoji: '🏰', name: 'База' },
-      { offset: 1, color: 0x8b4513, emoji: '🌍', name: 'Земля' },
-      { offset: 2, color: 0x87ceeb, emoji: '💨', name: 'Воздух' }
+
+    // Алтари стихий в ряд (центральный слот — иконка супер силы бога)
+    const elements: Array<{ key: ElementType; offset: number; emoji: string; name: string }> = [
+      { key: 'fire', offset: -2, emoji: '🔥', name: 'Огонь' },
+      { key: 'water', offset: -1, emoji: '💧', name: 'Вода' },
+      { key: 'earth', offset: 1, emoji: '🌍', name: 'Земля' },
+      { key: 'air', offset: 2, emoji: '💨', name: 'Воздух' }
     ];
-    
+
     // Адаптивный размер элементов в зависимости от ширины зоны
     const baseElementSize = Math.min(zone.width / 8, 50 * UI_SCALE); // Максимум 50 css px
     const elementSpacing = baseElementSize * 1.5;
     const elementRadius = baseElementSize / 2;
 
     // Адаптивный размер шрифта
-    const fontSize = Math.max(14 * UI_SCALE, baseElementSize * 0.5);
     const labelFontSize = Math.max(10 * UI_SCALE, baseElementSize * 0.3);
 
     // Центральный слот ряда — иконка супер силы бога с прогресс-баром
@@ -362,41 +403,82 @@ export class GameScene extends Phaser.Scene {
       () => { this.toggleSuperMode(); }
     );
 
+    // Пересоздаём алтари (при resize) — старые иконки уничтожаются
+    this.altars.forEach(a => a.destroy());
+    this.altars.clear();
+
     elements.forEach(element => {
       const elementX = centerX + (element.offset * elementSpacing);
       const elementY = centerY;
-      
-      // Для базы - уже создана, пропускаем
-      if (element.name === 'База') return;
-      
-      // Круг стихии
-      const elementCircle = this.add.circle(elementX, elementY, elementRadius, element.color);
-      elementCircle.setStrokeStyle(2 * UI_SCALE, 0xffffff);
+      const cfg = GameConfig.elements[element.key];
 
-      // Эмодзи стихии
-      const emoji = this.add.text(elementX, elementY, element.emoji, {
-        font: `${fontSize}px Arial`,
-        color: '#ffffff'
-      });
-      emoji.setOrigin(0.5);
-
-      // Название стихии
+      // Название стихии под алтарём
       const nameLabel = this.add.text(elementX, elementY + elementRadius + 10 * UI_SCALE, element.name, {
         font: `${labelFontSize}px Arial`,
         color: '#cccccc',
         align: 'center'
       });
       nameLabel.setOrigin(0.5);
-      
-      // Делаем интерактивным
-      elementCircle.setInteractive();
-      elementCircle.on('pointerdown', () => {
-        elementCircle.setStrokeStyle(3, 0xffff00);
-        this.time.delayedCall(300, () => {
-          elementCircle.setStrokeStyle(2, 0xffffff);
-        });
+
+      // Алтарь: круг, заливка маны цветом стихии снизу вверх (как у силы бога)
+      const altar = new ElementAltarIcon(this, elementX, elementY, elementRadius, {
+        key: element.key,
+        emoji: element.emoji,
+        color: cfg.color,
+        getProgress: () => this.elementMana.progress(element.key),
+        canUse: () => this.elementMana.canUse(element.key),
+        isSelected: () => this.elementMana.armed === element.key,
+        onToggle: () => {
+          if (this.elementMana.armed === element.key) {
+            this.elementMana.disarm();
+          } else {
+            this.elementMana.arm(element.key);
+          }
+          this.refreshAltarBars();
+        }
       });
+
+      this.altars.set(element.key, altar);
     });
+
+    this.refreshAltarBars();
+  }
+
+  /** Перерисовка алтарей: заливка маны + подсветка выбранного (событийно) */
+  private refreshAltarBars(): void {
+    this.altars.forEach(a => a.redraw());
+  }
+
+  /**
+   * Поюнитное списание маны за текущий штрих: каждый пройденный юнит
+   * длины (elementStrokeUnit) стоит costPerUse. Бар убывает в реальном
+   * времени. Бюджет (beginPotential) не даёт нарисовать больше оплаченного.
+   */
+  private chargeStrokeUnits(el: ElementType): void {
+    const unit = GameConfig.elementStrokeUnit * UI_SCALE;
+    const units = Math.floor(this.elementDrawer.paintedLength / unit);
+    const chargedUnits = Math.floor(this.strokeChargedLen / unit);
+    if (units <= chargedUnits) return;
+    const delta = units - chargedUnits;
+    this.elementMana.spend(el, delta * GameConfig.elements[el].costPerUse);
+    this.strokeChargedLen = units * unit;
+    this.refreshAltarBars();
+  }
+
+  /**
+   * Доплата за неполный хвостовой юнит на завершении штриха: всего за
+   * штрих платим ceil(paintedLength / unit) юнитов — ровно «длина = цена».
+   * Бюджет beginPotential гарантирует, что этой суммы хватит.
+   */
+  private settleStrokeUnits(el: ElementType): void {
+    const unit = GameConfig.elementStrokeUnit * UI_SCALE;
+    const painted = this.elementDrawer.paintedLength;
+    const needed = Math.ceil(painted / unit);
+    const charged = Math.floor(this.strokeChargedLen / unit);
+    const extra = needed - charged;
+    if (extra > 0) {
+      this.elementMana.spend(el, extra * GameConfig.elements[el].costPerUse);
+    }
   }
   
   private createDebugText(): void {
@@ -522,6 +604,23 @@ export class GameScene extends Phaser.Scene {
       this.fluidCtrl.setField(this.level.getCollisionField());
       this.syncFluidWorld();
     }
+
+    // Земля-барьер: пересоздать под новую сетку (ячейки и воркер сбрасываются
+    // на set_field); нарисованная раньше земля не переносится между уровнями
+    if (this.earthBarrier) {
+      const cf = this.level.getCollisionField();
+      this.earthBarrier.init(
+        {
+          cols: cf.cols,
+          rows: cf.rows,
+          cellSize: cf.cellSize,
+          ox: this.battlefieldZone.x,
+          oy: this.battlefieldZone.y,
+          color: GameConfig.elements.earth.color
+        },
+        (cells, value) => { this.fluidCtrl?.setEarth(cells, value); }
+      );
+    }
   }
 
   private renderObstacles(): void {
@@ -629,6 +728,21 @@ export class GameScene extends Phaser.Scene {
         this.handleEnemyReachedBase(sprite);
       }
     }
+
+    // Земля-барьер: монстры, атакующие землю, гибнут и грызут ячейки
+    // (per-cell HP, bitesPerCell). Мана/заряд бога за эти смерти НЕ начисляются
+    for (let a = 0; a < info.attackCount; a++) {
+      const id = info.attackIds[a];
+      const sprite = this.spriteById.get(id);
+      if (sprite && sprite.active) {
+        this.killEnemy(sprite);
+        this.earthBarrier?.biteCellsAround(
+          sprite.x,
+          sprite.y,
+          GameConfig.earth.biteRadius * UI_SCALE
+        );
+      }
+    }
   };
 
   private updateEnemyMovement(): void {
@@ -647,6 +761,18 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < children.length; i++) {
       const enemy = children[i];
       if (!enemy.active) continue; // «мёртвые» из пула пропускаем
+
+      // Земля-барьер (fallback): касающийся земли монстр атакует и гибнет,
+      // грызя ячейки. Паритет с воркером (упреждающий хитбокс вниз)
+      const look = Math.max(targetSpeed, hitR);
+      if (
+        (this.earthBarrier && this.earthBarrier.hasEarthAtBox(enemy.x, enemy.y, hitR)) ||
+        (this.earthBarrier && this.earthBarrier.hasEarthAtBox(enemy.x, enemy.y + look, hitR))
+      ) {
+        this.killEnemy(enemy);
+        this.earthBarrier.biteCellsAround(enemy.x, enemy.y, GameConfig.earth.biteRadius * UI_SCALE);
+        continue;
+      }
 
       // Вектор к базе
       const dx = baseX - enemy.x;
@@ -880,11 +1006,12 @@ export class GameScene extends Phaser.Scene {
 
     const panelWidth = Math.min(fontPx(340), screenWidth * 0.92);
     const headerH = fontPx(46);
-    const rowHeight = fontPx(34);
+    const rowHeight = fontPx(28); // компактные строки (панель растёт с числом строк)
     const genBtnH = fontPx(48);
     const padBottom = padPx(16);
-    // 5 параметров спавна + 2 генерации + 2 силы бога + строка сбросов
-    const panelHeight = headerH + 10 * rowHeight + genBtnH + padBottom;
+    // 9 строк спавна/генерации/силы бога + 8 строк баланса стихий/заряда + строка сбросов
+    const rowCount = 18;
+    const panelHeight = headerH + rowCount * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(padPx(20), screenHeight * 0.06));
 
@@ -1038,6 +1165,78 @@ export class GameScene extends Phaser.Scene {
       () => `${G.superRadius}`
     );
 
+    // Убийств молнией для полной зарядки бара (выше = медленнее заряд)
+    addRow('Убийств на заряд бога',
+      () => {
+        G.superChargeRequired = Math.max(10, G.superChargeRequired - 10);
+        this.godPower.onBalanceChanged();
+        this.godIcon?.redraw();
+      },
+      () => {
+        G.superChargeRequired = Math.min(500, G.superChargeRequired + 10);
+        this.godPower.onBalanceChanged();
+        this.godIcon?.redraw();
+      },
+      () => `${G.superChargeRequired}`
+    );
+
+    // --- Стихии: баланс (мана за убийство / стоимость / радиус штриха) ---
+
+    // gainPerKill — общий для всех алтарей (0.1..2); конфиг остаётся per-altar
+    addRow('Мана за убийство',
+      () => {
+        const v = +(GameConfig.elements.fire.gainPerKill - 0.1).toFixed(1);
+        for (const k of ELEMENT_KEYS) GameConfig.elements[k].gainPerKill = Math.max(0.1, v);
+      },
+      () => {
+        const v = +(GameConfig.elements.fire.gainPerKill + 0.1).toFixed(1);
+        for (const k of ELEMENT_KEYS) GameConfig.elements[k].gainPerKill = Math.min(2, v);
+      },
+      () => GameConfig.elements.fire.gainPerKill.toFixed(1)
+    );
+
+    // costPerUse — отдельно у каждого алтаря (1..100); цена за юнит длины
+    const costRows: Array<[ElementType, string]> = [
+      ['fire', `Стоимость огня (${GameConfig.elementStrokeUnit}px)`],
+      ['water', `Стоимость воды (${GameConfig.elementStrokeUnit}px)`],
+      ['earth', `Стоимость земли (${GameConfig.elementStrokeUnit}px)`],
+      ['air', `Стоимость воздуха (${GameConfig.elementStrokeUnit}px)`]
+    ];
+    for (const [key, label] of costRows) {
+      addRow(label,
+        () => {
+          GameConfig.elements[key].costPerUse = Math.max(1, GameConfig.elements[key].costPerUse - 1);
+          this.elementMana.onBalanceChanged();
+        },
+        () => {
+          GameConfig.elements[key].costPerUse = Math.min(100, GameConfig.elements[key].costPerUse + 1);
+          this.elementMana.onBalanceChanged();
+        },
+        () => `${GameConfig.elements[key].costPerUse}`
+      );
+    }
+
+    // radius штриха — общий для всех алтарей (10..100)
+    addRow('Радиус штриха',
+      () => {
+        const v = GameConfig.elements.fire.radius - 5;
+        for (const k of ELEMENT_KEYS) GameConfig.elements[k].radius = Math.max(10, v);
+      },
+      () => {
+        const v = GameConfig.elements.fire.radius + 5;
+        for (const k of ELEMENT_KEYS) GameConfig.elements[k].radius = Math.min(100, v);
+      },
+      () => `${GameConfig.elements.fire.radius}`
+    );
+
+    // Прочность Земли: укусов держит ячейка (выше = грызут медленнее).
+    // Прокачиваемый атрибут: пока ручка в поп-апе, экономика прокачки — потом
+    addRow('Прочность земли (укусов)',
+      () => { GameConfig.earth.bitesPerCell = Math.max(1, GameConfig.earth.bitesPerCell - 1); },
+      () => { GameConfig.earth.bitesPerCell = Math.min(100, GameConfig.earth.bitesPerCell + 1); },
+      () => `${GameConfig.earth.bitesPerCell}`
+    );
+
     // Кнопки сброса (в одну строку): силы и параметры генерации
     const rstY = y + padPx(4);
     const btnHw = (panelWidth - 28 - 8) / 2;
@@ -1094,6 +1293,91 @@ export class GameScene extends Phaser.Scene {
 
   private updatePopupValues(): void {
     this.popupUpdaters.forEach(u => { u.text.setText(u.getValue()); });
+    // Каждое изменение в поп-апе сохраняется (новый уровень/перезагрузка
+    // восстанавливают значения из TuningStore)
+    this.persistTuning();
+  }
+
+  /** Снимок всех тюнящихся параметров (поля сцены + GameConfig) */
+  private collectTuning(): TuningSnapshot {
+    const elements = {} as TuningSnapshot['elements'];
+    for (const k of ELEMENT_KEYS) {
+      elements[k] = {
+        gainPerKill: GameConfig.elements[k].gainPerKill,
+        costPerUse: GameConfig.elements[k].costPerUse,
+        radius: GameConfig.elements[k].radius
+      };
+    }
+    return {
+      spawnInterval: this.spawnInterval,
+      currentLevel: this.currentLevel,
+      maxEnemiesOnScreen: this.maxEnemiesOnScreen,
+      enemySpeed: this.enemySpeed,
+      enemySize: this.enemySize,
+      genDensity: this.genDensity,
+      genBlobScale: this.genBlobScale,
+      godPower: {
+        lightningKillCount: GameConfig.godPower.lightningKillCount,
+        superRadius: GameConfig.godPower.superRadius,
+        superChargeRequired: GameConfig.godPower.superChargeRequired
+      },
+      earth: {
+        bitesPerCell: GameConfig.earth.bitesPerCell
+      },
+      elements
+    };
+  }
+
+  /** Восстановление тюнинга из localStorage (при create/restart) */
+  private applyStoredTuning(): void {
+    const snap = TuningStore.load();
+    if (!snap) return;
+
+    if (typeof snap.spawnInterval === 'number') this.spawnInterval = snap.spawnInterval;
+    if (typeof snap.currentLevel === 'number') {
+      this.currentLevel = Phaser.Math.Clamp(Math.round(snap.currentLevel), 1, GameScene.MAX_LEVEL);
+    }
+    if (typeof snap.maxEnemiesOnScreen === 'number') {
+      this.maxEnemiesOnScreen = Math.min(Math.max(10, snap.maxEnemiesOnScreen), MAX_AGENTS);
+    }
+    if (typeof snap.enemySpeed === 'number') this.enemySpeed = snap.enemySpeed;
+    if (typeof snap.enemySize === 'number') this.enemySize = snap.enemySize;
+    if (typeof snap.genDensity === 'number') this.genDensity = snap.genDensity;
+    if (typeof snap.genBlobScale === 'number') this.genBlobScale = snap.genBlobScale;
+
+    if (snap.godPower) {
+      if (typeof snap.godPower.lightningKillCount === 'number') {
+        GameConfig.godPower.lightningKillCount = snap.godPower.lightningKillCount;
+      }
+      if (typeof snap.godPower.superRadius === 'number') {
+        GameConfig.godPower.superRadius = snap.godPower.superRadius;
+      }
+      if (typeof snap.godPower.superChargeRequired === 'number') {
+        GameConfig.godPower.superChargeRequired = snap.godPower.superChargeRequired;
+        this.godPower.onBalanceChanged();
+        this.godIcon?.redraw();
+      }
+    }
+
+    if (snap.elements) {
+      for (const k of ELEMENT_KEYS) {
+        const e = snap.elements[k];
+        if (!e) continue;
+        if (typeof e.gainPerKill === 'number') GameConfig.elements[k].gainPerKill = e.gainPerKill;
+        if (typeof e.costPerUse === 'number') GameConfig.elements[k].costPerUse = e.costPerUse;
+        if (typeof e.radius === 'number') GameConfig.elements[k].radius = e.radius;
+      }
+      this.elementMana.onBalanceChanged();
+    }
+
+    if (snap.earth && typeof snap.earth.bitesPerCell === 'number') {
+      GameConfig.earth.bitesPerCell = Math.max(1, Math.round(snap.earth.bitesPerCell));
+    }
+  }
+
+  /** Сохранение текущего тюнинга в localStorage */
+  private persistTuning(): void {
+    TuningStore.save(this.collectTuning());
   }
 
   /** Применяет новый размер ко всем живым врагам (событийно, не каждый кадр) */
@@ -1115,6 +1399,8 @@ export class GameScene extends Phaser.Scene {
   private setupInput(): void {
     // Тап по полю боя: победа -> следующий уровень, поражение -> рестарт уровня,
     // обычная молния либо (в режиме супер силы) супер атака.
+    // При выбранной стихии pointerdown начинает потенциальный штрих,
+    // решение «тап или рисование» принимается на pointerup.
     // Тапы по поп-апу настроек поле боя не затрагивают
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       if (this.settingsOpen) return;
@@ -1129,12 +1415,62 @@ export class GameScene extends Phaser.Scene {
         return;
       }
 
-      if (this.godPower.isArmed) {
-        this.castSuperAttack(pointer.x, pointer.y);
-      } else {
-        this.castLightning(pointer.x, pointer.y);
+      const armed = this.elementMana.armed;
+      if (armed !== null) {
+        // Бюджет штриха = столько юнитов, сколько можно оплатить маной
+        const cfg = GameConfig.elements[armed];
+        const unit = GameConfig.elementStrokeUnit * UI_SCALE;
+        const units = Math.floor(this.elementMana.manaOf(armed) / cfg.costPerUse);
+        this.strokeChargedLen = 0;
+        this.elementDrawer.beginPotential(pointer.x, pointer.y, armed, cfg, units * unit);
+        return;
+      }
+
+      this.fireGodTap(pointer.x, pointer.y);
+    });
+
+    // Рисование стихии: движение пальца ведёт линию; мана списывается
+    // поюнитно в реальном времени (бар убывает прямо во время штриха)
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (!this.elementDrawer?.active) return;
+      const el = this.elementMana.armed;
+      this.elementDrawer.onMove(pointer.x, pointer.y);
+      if (el !== null) {
+        this.chargeStrokeUnits(el);
       }
     });
+
+    // Завершение штриха: линия уже нанесена и оплачена по мере рисования;
+    // тап без движения — молния. Выбор алтаря СБРАСЫВАЕТСЯ только тапом
+    // по полю или выбором другого алтаря — после штриха он сохраняется
+    this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      if (!this.elementDrawer?.active) return;
+      const el = this.elementMana.armed;
+      const res = this.elementDrawer.end();
+
+      if (res === 'tap') {
+        // Тап по полю при выбранной стихии = молния + снятие выбора
+        this.elementMana.disarm();
+        this.fireGodTap(pointer.x, pointer.y);
+      } else {
+        // 'draw': доплата за неполный хвостовой юнит (длина = цена ровно);
+        // 'none': нарисовано нечего, мана не списывалась.
+        // Выбор НЕ снимаем — можно рисовать следующий кусок без перевыбора
+        if (res === 'draw' && el !== null) {
+          this.settleStrokeUnits(el);
+        }
+      }
+      this.refreshAltarBars();
+    });
+  }
+
+  /** Тап по полю боя без стихии: супер атака или обычная молния (ГДД 2.5) */
+  private fireGodTap(x: number, y: number): void {
+    if (this.godPower.isArmed) {
+      this.castSuperAttack(x, y);
+    } else {
+      this.castLightning(x, y);
+    }
   }
 
   // --- Система уровней ---
@@ -1143,6 +1479,8 @@ export class GameScene extends Phaser.Scene {
   private setLevel(level: number): void {
     this.currentLevel = Phaser.Math.Clamp(level, 1, GameScene.MAX_LEVEL);
     this.restartLevel(false);
+    // Прогресс уровня запоминается и для победы (nextLevel), и для поп-апа
+    this.persistTuning();
   }
 
   /** Победа: следующий уровень (на 100 монстров больше) */
@@ -1181,6 +1519,10 @@ export class GameScene extends Phaser.Scene {
     // Заряд силы бога не переносится на новый уровень
     this.godPower.reset();
     this.godIcon?.redraw();
+    // Мана стихий и нарисованные слои тоже не переносятся между уровнями
+    this.elementMana.reset();
+    this.elementDrawer.clearPersistent();
+    this.refreshAltarBars();
     this.victoryShown = false;
     this.gameOverShown = false;
     this.showLevelBanner();
@@ -1229,6 +1571,9 @@ export class GameScene extends Phaser.Scene {
     }
     if (targets.length > 0) {
       gp.registerKills(targets.length);
+      // Убийства наполняют ману каждого алтаря стихий
+      this.elementMana.gainFromKills(targets.length);
+      this.refreshAltarBars();
     }
     this.godIcon?.redraw();
     this.createWhiteFlash(x, y, radiusPx, false);
@@ -1242,6 +1587,10 @@ export class GameScene extends Phaser.Scene {
     const targets = this.captureTargets(x, y, radiusPx, Infinity);
     for (let i = 0; i < targets.length; i++) {
       this.killEnemy(targets[i]);
+    }
+    if (targets.length > 0) {
+      this.elementMana.gainFromKills(targets.length);
+      this.refreshAltarBars();
     }
     this.godIcon?.redraw();
     this.createWhiteFlash(x, y, radiusPx, true);

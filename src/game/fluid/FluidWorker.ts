@@ -21,6 +21,7 @@ import {
   type DispOut,
   blockedAt,
   isBoxBlocked,
+  isBoxEarth,
   moveDownStep
 } from './fluidProtocol';
 
@@ -80,6 +81,10 @@ const bestY = new Float32Array(MAX_AGENTS);
 /** Скретч для id агентов, достигших базы за шаг */
 const arrivedScratch = new Int32Array(MAX_AGENTS);
 let arrivedCount = 0;
+
+/** Скретч для id агентов, атакующих землю (Итерация 2) */
+const attacksScratch = new Int32Array(MAX_AGENTS);
+let attackCount = 0;
 
 // --- Spatial hash и контекст сил жидкости ---
 /** Покрытие зоны спавна над полем, px */
@@ -174,6 +179,21 @@ function integrate(arrivedBase: number): number {
     const p = { x: px[s], y: py[s] };
     const v = { x: vx[s], y: vy[s] };
     const hitR = Math.max(4, rad[s] * 0.6);
+
+    // Земля-барьер (Итерация 2): если хитбокс агента касается земли —
+    // стоп (без обхода/всплытия), агент атакует: id в attacksScratch,
+    // убирает кусок земли на main. moveDownStep не трогаем — паритет
+    // с fallback сохранён.
+    const look = Math.max(params.targetSpeed, hitR);
+    if (
+      isBoxEarth(field, px[s], py[s], hitR) ||
+      isBoxEarth(field, px[s], py[s] + look, hitR)
+    ) {
+      vx[s] = 0;
+      vy[s] = 0;
+      attacksScratch[attackCount++] = idOfSlot[s];
+      continue;
+    }
 
     // Строго вниз + обход препятствий (спасение застрявших внутри)
     const avoidRef = {
@@ -282,8 +302,20 @@ ctx.onmessage = (e: { data: unknown }) => {
         rows: msg.rows,
         cellSize: msg.cellSize,
         blocked: new Uint8Array(msg.blocked),
-        widthPx: msg.widthPx
+        widthPx: msg.widthPx,
+        earth: new Uint8Array(msg.cols * msg.rows) // земля обнуляется при новом уровне
       };
+      attackCount = 0;
+      break;
+    }
+
+    case 'set_earth': {
+      if (!field?.earth) break;
+      const cells = new Int32Array(msg.cells);
+      for (let i = 0; i < cells.length; i++) {
+        const c = cells[i];
+        if (c >= 0 && c < field.earth.length) field.earth[c] = msg.value;
+      }
       break;
     }
 
@@ -326,10 +358,11 @@ ctx.onmessage = (e: { data: unknown }) => {
     case 'step': {
       const t0 = performance.now();
 
-      // Сброс счётчика прибывших: если подшагов не будет (лаги/малый dt),
-      // нельзя переотправлять arrived из прошлого кадра — main повторно
-      // снимет HP базы
+      // Сброс счётчиков прибывших и атак: если подшагов не будет (лаги/малый
+      // dt), нельзя переотправлять данные из прошлого кадра — main повторно
+      // снимет HP базы / убьёт уже убитых атакующих
       arrivedCount = 0;
+      attackCount = 0;
 
       // Фиксированные подшаги c аккумулятором.
       // ВАЖНО: накапливаем прибывших за ВСЕ подшаги кадра. Перезапись
@@ -358,15 +391,22 @@ ctx.onmessage = (e: { data: unknown }) => {
         arrivedOut[a] = arrivedScratch[a];
       }
 
+      const attacksOut = new Int32Array(msg.outAttacks);
+      for (let a = 0; a < attackCount; a++) {
+        attacksOut[a] = attacksScratch[a];
+      }
+
       const frame: FrameMsg = {
         type: 'frame',
         count: n / OUT_STRIDE,
         arrivedCount,
         data: msg.outData,
         arrived: msg.outArrived,
+        attacks: msg.outAttacks,
+        attackCount,
         stepMs: performance.now() - t0
       };
-      ctx.postMessage(frame, [msg.outData, msg.outArrived]);
+      ctx.postMessage(frame, [msg.outData, msg.outArrived, msg.outAttacks]);
       break;
     }
   }
