@@ -123,6 +123,9 @@ export class GameScene extends Phaser.Scene {
   private static readonly PEN_CAP_MAX = 1000;
   /** Спад плотности градиента загона: каждый ряд выше — доля 0.6 от нижнего */
   private static readonly PEN_FALLOFF = 0.6;
+  /** Depth пен-монстров: выше полевых (850), ниже вспышек бога (900) —
+   *  иначе полевые монстры (спавн у нижней кромки загона) перекрывают толпу */
+  private static readonly PEN_DEPTH = 870;
   /** Доступно уровней: уровень N = N*100 монстров (50-й = 5000) */
   private static readonly MAX_LEVEL = 50;
   /** Монстров на первом уровне и шаг роста за уровень */
@@ -653,7 +656,8 @@ export class GameScene extends Phaser.Scene {
     s.setActive(false).setVisible(true);
     s.setScale((this.enemySize * UI_SCALE) / ENEMY_TEX_RADIUS);
     s.setTint(DEFAULT_ENEMY_TINT);
-    s.setDepth(850);
+    // Поверх полевых монстров (см. PEN_DEPTH): толпа не перекрывается спавном
+    s.setDepth(GameScene.PEN_DEPTH);
     this.penSprites.push(s);
     this.placeInPen(s, this.penSprites.length - 1, totalTarget);
   }
@@ -1826,7 +1830,10 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       if (this.gameOverShown) {
+        // Поражение: прогресс сбрасывается на первый уровень (свежая игра)
+        this.currentLevel = 1;
         this.restartLevel(true);
+        this.persistTuning();
         return;
       }
 
