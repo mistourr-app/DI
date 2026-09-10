@@ -105,6 +105,8 @@ export class GameScene extends Phaser.Scene {
   private pendingBiteCount = 0;
   /** Индикатор здоровья базы: заливка зоны базы цветом снизу вверх (0 HP = полная) */
   private baseHealthFill: Phaser.GameObjects.Rectangle | null = null;
+  /** Загон монстров: спрайты очереди у верхней кромки (оставшиеся), не в бою */
+  private penSprites: Phaser.GameObjects.Image[] = [];
 
   // Константы
   private static readonly BATTLEFIELD_RATIO = 5 / 6;
@@ -113,6 +115,14 @@ export class GameScene extends Phaser.Scene {
   private static readonly COLOR_BASE_BG = 0x0a1a0a;
   /** Цвет индикатора здоровья базы: заливка зоны базы снизу вверх (0 HP = полная) */
   private static readonly COLOR_BASE_HEALTH = 0x461b1b;
+  /** Цвет фона загона монстров (полоса у верхней кромки поля боя) */
+  private static readonly COLOR_PEN_BG = 0x1c1c28;
+  /** Высота загона монстров, css-px (полоса на всю ширину поля боя) */
+  private static readonly PEN_HEIGHT = 64;
+  /** Потолок видимой «толпы» в загоне (перф; десктоп не приоритетная платформа) */
+  private static readonly PEN_CAP_MAX = 1000;
+  /** Спад плотности градиента загона: каждый ряд выше — доля 0.6 от нижнего */
+  private static readonly PEN_FALLOFF = 0.6;
   /** Доступно уровней: уровень N = N*100 монстров (50-й = 5000) */
   private static readonly MAX_LEVEL = 50;
   /** Монстров на первом уровне и шаг роста за уровень */
@@ -154,7 +164,7 @@ export class GameScene extends Phaser.Scene {
     // прочие стихии — в зоны эффектов (ElementEffectSystem)
     this.elementDrawer = new ElementDrawer(
       this,
-      (x, y) => this.isBlockedWorld(x, y),
+      (x, y) => this.isDrawBlocked(x, y),
       (key, points) => this.applyElementStroke(key, points)
     );
 
@@ -219,6 +229,7 @@ export class GameScene extends Phaser.Scene {
       this.elementDrawer?.destroy();
       this.earthBarrier?.destroy();
       this.elementFx?.destroy();
+      this.clearPen();
     });
   }
 
@@ -367,6 +378,17 @@ export class GameScene extends Phaser.Scene {
       this.battlefieldZone.width,
       this.battlefieldZone.height
     );
+
+    // 3.1. Загон монстров: полоса у верхней кромки поля боя (оставшиеся).
+    // Спрайты очереди рисуются поверх (depth 850). Нижняя граница — линия.
+    const penH = GameScene.PEN_HEIGHT * UI_SCALE;
+    g.fillStyle(GameScene.COLOR_PEN_BG, 1);
+    g.fillRect(this.battlefieldZone.x, this.battlefieldZone.y, this.battlefieldZone.width, penH);
+    g.lineStyle(2 * UI_SCALE, 0x00ffff, 0.35);
+    g.beginPath();
+    g.moveTo(this.battlefieldZone.x, this.battlefieldZone.y + penH);
+    g.lineTo(this.battlefieldZone.x + this.battlefieldZone.width, this.battlefieldZone.y + penH);
+    g.strokePath();
 
     // 4. Зона базы
     g.fillStyle(GameScene.COLOR_BASE_BG, 1);
@@ -573,11 +595,145 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Вместимость загона при плотной упаковке: сколько монстров нужно, чтобы
+   * занять его целиком. Ячейка = размер монстра × 0.9 (лёгкое перекрытие).
+   * Десктоп не приоритетная платформа — потолок PEN_CAP_MAX.
+   */
+  private penCapacity(): number {
+    const z = this.battlefieldZone;
+    const margin = 8 * UI_SCALE;
+    const penH = (GameScene.PEN_HEIGHT - 8) * UI_SCALE;
+    const w = z.width - margin * 2;
+    const size = Math.max(4, this.enemySize * UI_SCALE);
+    const cell = Math.max(1, size * 0.9);
+    const cols = Math.max(1, Math.floor(w / cell));
+    const rows = Math.max(1, Math.floor(penH / cell));
+    return Math.min(GameScene.PEN_CAP_MAX, cols * rows);
+  }
+
+  /**
+   * Заполнить загон монстров очередью: min(оставшиеся, вместимость).
+   * Если оставшихся больше вместимости — полная толпа (плотная сетка);
+   * иначе — градиент от нижнего края (нижний ряд плотно, выше свободнее).
+   */
+  private initPen(): void {
+    this.clearPen();
+    const remaining = this.totalEnemiesToSpawn - this.enemiesSpawned;
+    const count = Math.min(Math.max(0, remaining), this.penCapacity());
+    for (let i = 0; i < count; i++) {
+      this.addPenSprite(count);
+    }
+  }
+
+  /**
+   * Перераскладка загона по текущему числу: толпа «течёт» вниз — монстры
+   * спускаются и редеют к хвосту, без дыр (вызывается при каждом уходе).
+   */
+  private relayoutPen(): void {
+    const n = this.penSprites.length;
+    for (let i = 0; i < n; i++) {
+      this.placeInPen(this.penSprites[i], i, n);
+    }
+  }
+
+  /** Очистить загон (новый уровень / регенерация). Паркованные спрайты
+   *  (не выходившие на поле) уничтожаются — они не в группе врагов */
+  private clearPen(): void {
+    for (const s of this.penSprites) {
+      s.destroy();
+    }
+    this.penSprites = [];
+  }
+
+  /** Добавить один спрайт в очередь загона. totalTarget — итоговое число
+   *  монстров в загоне (для выбора раскладки «толпа/градиент») */
+  private addPenSprite(totalTarget: number): void {
+    const s = this.add.image(0, 0, 'enemy');
+    s.setActive(false).setVisible(true);
+    s.setScale((this.enemySize * UI_SCALE) / ENEMY_TEX_RADIUS);
+    s.setTint(DEFAULT_ENEMY_TINT);
+    s.setDepth(850);
+    this.penSprites.push(s);
+    this.placeInPen(s, this.penSprites.length - 1, totalTarget);
+  }
+
+  /**
+   * Детерминированный джиттер (-1..1) по индексу: хаос без мерцания
+   * (позиции пересчитываются при каждой перераскладке — random был бы скачущим).
+   */
+  private penJitter(seed: number): number {
+    const v = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return (v - Math.floor(v)) * 2 - 1;
+  }
+
+  /**
+   * Раскладка монстров загона:
+   *  - total >= вместимости: ПОЛНАЯ ТОЛПА — плотная сетка на весь загон;
+   *  - total < вместимости: ГРАДИЕНТ от нижнего края (нижний ряд плотно,
+   *    выше — спад PEN_FALLOFF). Верхний по индексу монстр уходит первым
+   *    и лежит в НИЖНЕМ ряду — монстры «спускаются» вниз, а не убывают вбок.
+   *  Джиттер добавляет хаос (без строгих рядов/столбиков).
+   */
+  private placeInPen(s: Phaser.GameObjects.Image, index: number, total: number): void {
+    const z = this.battlefieldZone;
+    const margin = 8 * UI_SCALE;
+    const penH = (GameScene.PEN_HEIGHT - 8) * UI_SCALE;
+    const w = z.width - margin * 2;
+    const size = Math.max(4, this.enemySize * UI_SCALE);
+    const cell = Math.max(1, size * 0.9);
+    const cols = Math.max(1, Math.floor(w / cell));
+    const rows = Math.max(1, Math.floor(penH / cell));
+    const capacity = Math.min(GameScene.PEN_CAP_MAX, cols * rows);
+    const j = cell * 0.4; // хаос — но не разрушает толпу
+    const jx = this.penJitter(index + 1) * j;
+    const jy = this.penJitter(index + 2) * j;
+
+    // --- Полная толпа: все ячейки заняты, уходит снизу (верхний index) ---
+    if (total >= capacity) {
+      const cx = index % cols;
+      const cy = Math.floor(index / cols);
+      s.setPosition(
+        z.x + margin + cx * cell + cell / 2 + jx,
+        z.y + margin + cy * cell + cell / 2 + jy
+      );
+      return;
+    }
+
+    // --- Градиент от нижнего края: сколько монстров в каждом ряду снизу вверх ---
+    let rem = total;
+    const rowCaps: number[] = [];
+    for (let r = 0; r < rows && rem > 0; r++) {
+      const cap = r === 0
+        ? Math.min(cols, rem)                              // нижний ряд: плотно
+        : Math.min(cols, Math.ceil(rem * (1 - GameScene.PEN_FALLOFF)));
+      rowCaps.push(cap);
+      rem -= cap;
+    }
+    // k с конца: наибольший index (уходит первым) -> нижний ряд
+    const k = total - 1 - index;
+    let acc = 0;
+    for (let r = 0; r < rowCaps.length; r++) {
+      if (k < acc + rowCaps[r]) {
+        const t = (k - acc) / rowCaps[r];
+        const cx = Math.min(cols - 1, Math.floor(t * cols));
+        const cy = rows - 1 - r; // r=0 — нижний ряд
+        s.setPosition(
+          z.x + margin + cx * cell + cell / 2 + jx,
+          z.y + margin + cy * cell + cell / 2 + jy
+        );
+        return;
+      }
+      acc += rowCaps[r];
+    }
+    // Фолбэк (не должно случаться): центр нижнего ряда
+    s.setPosition(z.x + margin + w / 2, z.y + margin + cell / 2);
+  }
+
   private createEnemy(): void {
-    // Враги спаунятся НАД верхней границей поля боя (выше экрана).
-    // Блобы теперь начинаются от самой кромки — даём запас, чтобы
-    // появление было видно до первого столкновения
-    const spawnY = this.battlefieldZone.y - 32 * UI_SCALE;
+    // Монстры выходят ИЗ ЗАГОНА (полоса у верхней кромки) и падают на поле.
+    // Спавн — у нижней границы загона.
+    const spawnY = this.battlefieldZone.y + GameScene.PEN_HEIGHT * UI_SCALE;
 
     // X: по очереди через ВСЕ входы уровня, равномерно на всю ширину входа.
     // ВНИМАНИЕ: entrances хранятся в ЛОКАЛЬНЫХ координатах поля боя,
@@ -604,15 +760,21 @@ export class GameScene extends Phaser.Scene {
       spawnY + 10 * UI_SCALE
     );
 
-    // Пул: переиспользуем «мёртвых» врагов вместо создания/уничтожения.
-    // Image с общей текстурой батчится WebGL в ОДИН draw call на всех,
-    // в отличие от Arc-фигур, которые рисуются каждая отдельно.
-    let enemy = this.enemies.getFirstDead(false) as Phaser.GameObjects.Image | null;
-    if (!enemy) {
-      enemy = this.add.image(x, y, 'enemy');
+    // Источник спрайта: сначала очередь загона (визуальный остаток), затем
+    // пул мёртвых полевых, иначе — новый. Image батчится WebGL в один draw call.
+    let enemy: Phaser.GameObjects.Image | null = null;
+    if (this.penSprites.length > 0) {
+      enemy = this.penSprites.pop()!;
+      enemy.setPosition(x, y).setActive(true).setVisible(true);
       this.enemies.add(enemy);
     } else {
-      enemy.setPosition(x, y).setActive(true).setVisible(true);
+      enemy = this.enemies.getFirstDead(false) as Phaser.GameObjects.Image | null;
+      if (!enemy) {
+        enemy = this.add.image(x, y, 'enemy');
+        this.enemies.add(enemy);
+      } else {
+        enemy.setPosition(x, y).setActive(true).setVisible(true);
+      }
     }
     enemy.setScale((this.enemySize * UI_SCALE) / ENEMY_TEX_RADIUS);
     enemy.setAlpha(1);
@@ -657,6 +819,15 @@ export class GameScene extends Phaser.Scene {
     // Увеличиваем счётчики
     this.enemyCount++;
     this.enemiesSpawned++;
+
+    // Поддерживаем загон: пока осталось ≥ вместимости — загон полон
+    // (толпа); иначе пустеет по мере спавна. Перераскладка заставляет
+    // толпу «течь» вниз и редеть к хвосту (без дыр)
+    const remaining = this.totalEnemiesToSpawn - this.enemiesSpawned;
+    if (remaining >= this.penCapacity()) {
+      this.addPenSprite(this.penCapacity());
+    }
+    this.relayoutPen();
   }
 
   // --- Генерация уровня ---
@@ -669,7 +840,9 @@ export class GameScene extends Phaser.Scene {
       height: zone.height,
       passageWidth: 60,
       obstacleDensity: this.genDensity,
-      blobScale: this.genBlobScale
+      blobScale: this.genBlobScale,
+      // Полоса загона сверху свободна от препятствий (+запас под спавн-джиттер)
+      topFreeHeight: (GameScene.PEN_HEIGHT + 16) * UI_SCALE
     });
     this.renderObstacles();
 
@@ -714,6 +887,10 @@ export class GameScene extends Phaser.Scene {
         { enemies: this.enemies, killEnemy: (e) => this.killEnemy(e) }
       );
     }
+
+    // Загон монстров: очередь оставшихся у верхней кромки (пересоздаётся
+    // под новый уровень/seed; нарисованные раньше монстры не переносятся)
+    this.initPen();
   }
 
   private renderObstacles(): void {
@@ -744,6 +921,18 @@ export class GameScene extends Phaser.Scene {
       wx - this.battlefieldZone.x,
       wy - this.battlefieldZone.y
     );
+  }
+
+  /** Полоса загона монстров (верх поля боя): стихии/силы туда не рисуются */
+  private isInPen(_wx: number, wy: number): boolean {
+    const z = this.battlefieldZone;
+    return wy >= z.y && wy < z.y + GameScene.PEN_HEIGHT * UI_SCALE;
+  }
+
+  /** Где НЕЛЬЗЯ рисовать стихию: препятствия ИЛИ полоса загона.
+   *  (для монстров движение идёт по isBlockedWorld без загона) */
+  private isDrawBlocked(wx: number, wy: number): boolean {
+    return this.isBlockedWorld(wx, wy) || this.isInPen(wx, wy);
   }
 
   /**
@@ -1685,6 +1874,9 @@ export class GameScene extends Phaser.Scene {
         this.restartLevel(true);
         return;
       }
+
+      // Загон монстров: стихии и силы (молния/супер) сюда не рисуются/не бьют
+      if (this.isInPen(pointer.x, pointer.y)) return;
 
       const armed = this.elementMana.armed;
       if (armed !== null) {

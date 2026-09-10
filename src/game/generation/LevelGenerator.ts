@@ -72,6 +72,8 @@ export interface LevelParams {
   obstacleDensity?: number;
   /** Множитель размера структур: 1 = база, больше = крупнее блобы (по умолчанию 1) */
   blobScale?: number;
+  /** Свободная полоса сверху, px (загон монстров): препятствий нет */
+  topFreeHeight?: number;
 }
 
 export interface Level {
@@ -127,6 +129,7 @@ export class LevelGenerator {
     const density = clamp(params.obstacleDensity ?? 0.4, 0.01, 2);
     const blobScale = clamp(params.blobScale ?? 1, 0.1, 4);
     const bottomMargin = clamp(height * BOTTOM_FREE_RATIO, CELL * 2, height * 0.25);
+    const topFree = clamp(params.topFreeHeight ?? 0, 0, height * 0.4);
 
     const cols = Math.ceil(width / CELL);
     const rows = Math.ceil(height / CELL);
@@ -188,6 +191,18 @@ export class LevelGenerator {
     // Заливка могла запечатать весь верхний ряд (полости под входами).
     // Тогда монстрам некуда входить — пробиваем сквозные дренажные шахты.
     this.ensureTopEntrances(grid, cols, rows, height, bottomMargin, passageWidth);
+
+    // --- 3.7 Свободная полоса сверху (загон монстров) ---
+    // Верх полосы загона свободен от препятствий: монстры выходят из загона
+    // и падают в лабиринт. Очищаем до построения полигонов — и коллизии, и
+    // отрисовка не задевают загон.
+    const topFreeRows = clamp(Math.ceil(topFree / CELL), 0, rows - 1);
+    for (let cy = 0; cy < topFreeRows; cy++) {
+      const row = cy * cols;
+      for (let cx = 0; cx < cols; cx++) {
+        grid[row + cx] = 0;
+      }
+    }
 
     // --- 4. Контурная трассировка блобов -> сглаженные полигоны ---
     const obstacles = this.buildPolygons(grid, cols, rows);
