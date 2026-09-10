@@ -264,6 +264,8 @@ export interface CollisionField {
   blocked: Uint8Array; // 1 = занято препятствием; вне сетки = свободно
   /** Реальная ширина поля боя в px (может быть меньше cols*cellSize) */
   widthPx?: number;
+  /** Земля-барьер (Итерация 2): 1 = ячейка земли; обновляется set_earth */
+  earth?: Uint8Array;
 }
 
 // ------------------------------------------------------------
@@ -310,11 +312,18 @@ export interface StepMsg {
   dt: number;
   outData: ArrayBuffer;      // Float32Array(OUT_STRIDE * maxAgents), transferable
   outArrived: ArrayBuffer;   // Int32Array(maxAgents), transferable
+  outAttacks: ArrayBuffer;   // Int32Array(maxAgents), transferable (Итерация 2)
 }
 
 export interface SetParamsMsg {
   type: 'params';
   params: FluidParams;
+}
+
+export interface SetEarthMsg {
+  type: 'set_earth';
+  cells: ArrayBuffer; // Int32Array(flat cell indices), transferable
+  value: 0 | 1;       // 1 = добавить землю, 0 = убрать
 }
 
 export type WorkerCommand =
@@ -323,7 +332,8 @@ export type WorkerCommand =
   | AddAgentMsg
   | RemoveAgentMsg
   | StepMsg
-  | SetParamsMsg;
+  | SetParamsMsg
+  | SetEarthMsg;
 
 // ------------------------------------------------------------
 // Сообщения worker -> main
@@ -339,6 +349,8 @@ export interface FrameMsg {
   arrivedCount: number; // число достигших базы за этот кадр
   data: ArrayBuffer;    // Float32Array(OUT_STRIDE * count) [id, x, y]...
   arrived: ArrayBuffer; // Int32Array(arrivedCount) — id достигших
+  attacks: ArrayBuffer; // Int32Array(attackCount) — id атакующих землю (Итерация 2)
+  attackCount: number;
   stepMs: number;       // длительность расчёта шага (для дебаг-метрики)
 }
 
@@ -356,7 +368,30 @@ export function blockedAt(field: CollisionField, lx: number, ly: number): boolea
   // Фантомная полоса справа: сетка шире реального поля (cols*cell > widthPx).
   // Препятствия там невидимы для игрока — коллизией не считаем
   if (field.widthPx !== undefined && lx >= field.widthPx) return false;
-  return field.blocked[cy * field.cols + cx] === 1;
+  if (field.blocked[cy * field.cols + cx] === 1) return true;
+  // Земля-барьер (Итерация 2) тоже непроходима
+  if (field.earth && field.earth[cy * field.cols + cx] === 1) return true;
+  return false;
+}
+
+/** Земля ли в точке (Итерация 2). Вне сетки — нет. */
+export function earthAt(field: CollisionField, lx: number, ly: number): boolean {
+  if (!field.earth) return false;
+  const cx = Math.floor(lx / field.cellSize);
+  const cy = Math.floor(ly / field.cellSize);
+  if (cx < 0 || cy < 0 || cx >= field.cols || cy >= field.rows) return false;
+  if (field.widthPx !== undefined && lx >= field.widthPx) return false;
+  return field.earth[cy * field.cols + cx] === 1;
+}
+
+/** Касается ли прямоугольник вокруг точки земли (4 угла) */
+export function isBoxEarth(field: CollisionField, lx: number, ly: number, r: number): boolean {
+  return (
+    earthAt(field, lx - r, ly - r) ||
+    earthAt(field, lx + r, ly - r) ||
+    earthAt(field, lx - r, ly + r) ||
+    earthAt(field, lx + r, ly + r)
+  );
 }
 
 /** Хитбокс-прямоугольник из 4 углов вокруг центра */

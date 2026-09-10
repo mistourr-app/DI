@@ -43,41 +43,68 @@ export const GameConfig = {
     lightningKillCount: 2,    // Монстров уничтожает одна молния
     lightningRadius: 60,      // Радиус поражения молнии
     superRadius: 100,         // Радиус зоны супер атаки
-    superChargeRequired: 40   // Убийств молнией для полной зарядки бара
+    superChargeRequired: 80   // Убийств молнией для полной зарядки бара (в 2 раза медленнее прежнего 40)
   },
 
-  // Настройки стихий
+  // Настройки стихий (Итерация 1 системы стихий).
+  // capacity/gainPerKill/costPerUse — независимая мана алтарей
+  // (накопление от убийств, списание за штрих). Прокачиваются в будущем.
   elements: {
     fire: {
       color: 0xff5500,
       damage: 5,
       duration: 2.0,
-      radius: 40,
-      cost: 10
+      radius: 25,
+      cost: 10,
+      capacity: 20,
+      gainPerKill: 2,
+      costPerUse: 8
     },
     water: {
       color: 0x0066ff,
       damage: 3,
       duration: 3.0,
-      radius: 50,
-      cost: 8
+      radius: 25,
+      cost: 8,
+      capacity: 20,
+      gainPerKill: 2,
+      costPerUse: 8
     },
     earth: {
       color: 0x8b4513,
       damage: 4,
       duration: 4.0,
-      radius: 60,
-      cost: 12
+      radius: 25,
+      cost: 12,
+      capacity: 20,
+      gainPerKill: 2,
+      costPerUse: 8
     },
     air: {
       color: 0x87ceeb,
       damage: 2,
       duration: 1.5,
-      radius: 30,
-      cost: 6
+      radius: 25,
+      cost: 6,
+      capacity: 20,
+      gainPerKill: 2,
+      costPerUse: 8
     }
   },
-  
+
+  // Длина одного «юнита» штриха стихии, css-px: costPerUse = цена за юнит.
+  // Рисование N юнитов списывает N × costPerUse маны в реальном времени.
+  elementStrokeUnit: 50,
+
+  // Земля-барьер (Итерация 3): монстр, касающийся земли, атакует и гибнет,
+  // грызя ячейки в радиусе biteRadius (css-px): каждая -1 HP.
+  // Ячейка исчезает, когда HP = 0; bitesPerCell — прокачиваемый атрибут
+  // (выше = землю грызут медленнее).
+  earth: {
+    biteRadius: 24,
+    bitesPerCell: 5
+  },
+
   // Комбинации стихий
   combinations: {
     // Огонь + Вода = Пар
@@ -252,6 +279,18 @@ export const GameConfig = {
 // Типы для TypeScript
 export type ElementType = 'fire' | 'water' | 'earth' | 'air';
 export type CombinationType = 'fire_water' | 'water_earth' | 'fire_air';
+
+// Полный конфиг одной стихии (цвет/эффект + мана алтаря)
+export interface ElementConfig {
+  color: number;
+  damage: number;
+  duration: number;
+  radius: number;
+  cost: number;
+  capacity: number;   // Ёмкость маны алтаря (потолок накопления)
+  gainPerKill: number; // Порция маны алтарю за одного убитого монстра
+  costPerUse: number; // Стоимость одного штриха
+}
 export type BuildingType = 'mana_generator' | 'defense_tower' | 'research_center';
 export type ResourceType = 'mana' | 'gold' | 'wood';
 
