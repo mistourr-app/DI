@@ -13,7 +13,11 @@ import { EarthBarrierSystem } from '../game/element/EarthBarrierSystem';
 import { ElementEffectSystem } from '../game/element/ElementEffectSystem';
 import { TuningStore, type TuningSnapshot } from '../game/save/TuningStore';
 import monsterBaseUrl from '../assets/monster_base.png';
+import obstaclesBlobUrl from '../assets/obstacles_blob.png';
+import groundBaseUrl from '../assets/ground_base.png';
 import { StateOverlayPool } from '../game/visuals/stateOverlay';
+import { frameIndexForCell } from '../game/visuals/blobTiles';
+import { ensureObstacleAtlas } from '../game/visuals/blobAtlas';
 
 // Радиус круга в текстуре монстра — для масштабирования (32×32 px)
 const ENEMY_TEX_RADIUS = 16;
@@ -28,6 +32,8 @@ const FX_TICK_INTERVAL = 100;
 const AIR_RESPONSE = 0.35;
 const AIR_DAMP = 0.97;
 const MIN_DRIFT_SQ = 0.0025;
+// Препятствия: блоб-тайлы под землёй (700) и штрихами (800), над фоном (0)
+const OBSTACLE_DEPTH = 600;
 
 export class GameScene extends Phaser.Scene {
   private enemies!: Phaser.GameObjects.Group;
@@ -40,6 +46,8 @@ export class GameScene extends Phaser.Scene {
   private gameArea!: Phaser.Geom.Rectangle;
   /** Статичный фон (чёрный экран + поле боя + зона базы + разделитель) одним объектом */
   private zoneGraphics!: Phaser.GameObjects.Graphics;
+  /** Текстура земли на поле боя (tileSprite, загон и база не покрываются) */
+  private groundTile: Phaser.GameObjects.TileSprite | null = null;
   
   // Настройки спавна врагов
   private currentLevel: number = 1;          // Текущий уровень (1..MAX_LEVEL)
@@ -68,7 +76,8 @@ export class GameScene extends Phaser.Scene {
   // Уровень (генерация по seed)
   private levelGenerator!: LevelGenerator;
   private level!: ReturnType<LevelGenerator['generate']>;
-  private obstacleGraphics: Phaser.GameObjects.Graphics | null = null;
+  /** Блоб-тайлы препятствий (спрайты одного атласа, один draw call) */
+  private obstacleSprites: Phaser.GameObjects.Group | null = null;
   private levelSeed: string = 'seed-' + Math.floor(Math.random() * 1e9).toString(36);
   private spawnGateIdx: number = 0; // раунд-робин по входам
   // Параметры генерации (крутятся в дебаг поп-апе)
@@ -138,6 +147,14 @@ export class GameScene extends Phaser.Scene {
 
   preload(): void {
     this.load.image('enemy', monsterBaseUrl);
+    // Блоб-тайлсет препятствий художника: 47 кадров 16×16, 8×6.
+    // Если файла нет — процедурный атлас (ensureObstacleAtlas) как фолбэк.
+    this.load.spritesheet('obstacle-blob', obstaclesBlobUrl, {
+      frameWidth: 16,
+      frameHeight: 16
+    });
+    // Текстура земли для заливки поля боя (загон и база — свои текстуры)
+    this.load.image('ground-base', groundBaseUrl);
   }
 
   create(): void {
@@ -395,6 +412,23 @@ export class GameScene extends Phaser.Scene {
     g.moveTo(this.battlefieldZone.x, this.battlefieldZone.y + penH);
     g.lineTo(this.battlefieldZone.x + this.battlefieldZone.width, this.battlefieldZone.y + penH);
     g.strokePath();
+
+    // 3.2. Заливка поля боя текстурой земли (ниже загона, база не входит).
+    // tileSprite повторяет текстуру 64×64. Глубина: над фоном (0), под
+    // препятствиями (600), землёй (700), штрихами (800) и монстрами (850).
+    if (this.groundTile) {
+      this.groundTile.destroy();
+      this.groundTile = null;
+    }
+    const fieldH = this.battlefieldZone.height - penH;
+    this.groundTile = this.add.tileSprite(
+      this.battlefieldZone.x + this.battlefieldZone.width / 2,
+      this.battlefieldZone.y + penH + fieldH / 2,
+      this.battlefieldZone.width,
+      fieldH,
+      'ground-base'
+    );
+    this.groundTile.setDepth(100);
 
     // 4. Зона базы
     g.fillStyle(GameScene.COLOR_BASE_BG, 1);
@@ -899,24 +933,36 @@ export class GameScene extends Phaser.Scene {
   }
 
   private renderObstacles(): void {
-    if (this.obstacleGraphics) {
-      this.obstacleGraphics.destroy();
-      this.obstacleGraphics = null;
+    if (this.obstacleSprites) {
+      this.obstacleSprites.destroy(true);
+      this.obstacleSprites = null;
     }
-    const g = this.add.graphics();
+    const cf = this.level.getCollisionField();
+    const key = ensureObstacleAtlas(this);
     const ox = this.battlefieldZone.x;
     const oy = this.battlefieldZone.y;
+    const half = cf.cellSize / 2;
 
-    // Контур + сплошная заливка (по дизайн-доку)
-    g.fillStyle(0x39445c, 1);
-    g.lineStyle(2, 0xaebfdd, 0.9);
-    for (const poly of this.level.obstacles) {
-      if (poly.points.length < 3) continue;
-      const pts = poly.points.map(p => new Phaser.Geom.Point(p.x + ox, p.y + oy));
-      g.fillPoints(pts, true);
-      g.strokePoints(pts, true);
+    // Блоб-тайлы: по спрайту на занятую клетку, кадр по 8 соседям.
+    // Один атлас -> один батч, статично, рисуется разово на уровень.
+    const group = this.add.group();
+    const blocked = cf.blocked;
+    for (let cy = 0; cy < cf.rows; cy++) {
+      const row = cy * cf.cols;
+      for (let cx = 0; cx < cf.cols; cx++) {
+        if (blocked[row + cx] !== 1) continue;
+        const frame = frameIndexForCell(blocked, cf.cols, cf.rows, cx, cy);
+        const s = this.add.image(
+          ox + cx * cf.cellSize + half,
+          oy + cy * cf.cellSize + half,
+          key,
+          frame
+        );
+        s.setDepth(OBSTACLE_DEPTH);
+        group.add(s);
+      }
     }
-    this.obstacleGraphics = g;
+    this.obstacleSprites = group;
   }
 
   /** Коллизия в мировых координатах: переводим в локальные поля боя */
