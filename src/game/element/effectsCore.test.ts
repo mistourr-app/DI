@@ -88,8 +88,8 @@ describe('effectsCore', () => {
     expect(tintFor(applyStatus(e, 1000, cfg, noFire, noWater, noAir))).toBe(0xffe206);
   });
 
-  it('tintFor: дефолт красный, горение жёлтый, мокрый голубой, сдутый бледно-синий', () => {
-    expect(tintFor('none')).toBe(0xed0000);
+  it('tintFor: дефолт белый (оригинал спрайта), горение жёлтый, мокрый голубой, сдутый бледно-синий', () => {
+    expect(tintFor('none')).toBe(0xffffff);
     expect(tintFor('burn')).toBe(0xffe206);
     expect(tintFor('wet')).toBe(0x00d9ff);
     expect(tintFor('blown')).toBe(0xb4c2f0);

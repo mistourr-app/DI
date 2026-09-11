@@ -11,9 +11,11 @@
 //   - Воздух — отброс применяет ВОРКЕР (airPushStrength по направлению
 //              жеста), здесь только хранение оверлея для воркера.
 //
-// Статусы рисуются на самом монстре через перекраску (tint, §3.7):
-// дефолт — красный, горение — оранжевый, мокрый — синий. setTint
-// вызывается ТОЛЬКО при смене статуса (нет перекраски в каждом кадре).
+// Статусы рисуются на самом монстре через «двойник» — второй спрайт той же
+// текстуры со сплошной заливкой цветом статуса (setTintFill): форма сохраняется,
+// смешивания с цветным артом нет. Горение — заливка на 80%, вода/воздух —
+// с плавным угасанием через alpha по остатку времени. Двойник управляется
+// ТОЛЬКО при смене статуса (тик ~10 Гц), в кадрах просто синхронизирует позицию.
 //
 // Оверлеи (fire/water/air) — счётчики на ячейку (refcount): два штриха
 // могут перекрываться, ячейка гаснет, только когда её покинули ВСЕ.
@@ -23,7 +25,7 @@ import Phaser from 'phaser';
 import { UI_SCALE } from '../config/uiScale';
 import { GameConfig, type ElementType } from '../config/GameConfig';
 import { cellsWithinCircle } from './earthCells';
-import { applyStatus, igniteNeighbors, tintFor, lerpColor, type EffectConfig } from './effectsCore';
+import { applyStatus, igniteNeighbors, tintFor, STATE_FILL_ALPHA, type EffectConfig } from './effectsCore';
 
 /** Опции инициализации: сетка уровня + смещение поля боя */
 export interface ElementEffectOptions {
@@ -44,10 +46,17 @@ export type PublishEffects = (
   dirY?: number
 ) => void;
 
-/** Хост: группа врагов + убийство (GameScene подключает) */
+/** Мост к пулу «двойников» статусов (GameScene подключает) */
+export interface OverlayBridge {
+  obtain: (x: number, y: number, scale: number) => Phaser.GameObjects.Image;
+  release: (img: Phaser.GameObjects.Image) => void;
+}
+
+/** Хост: группа врагов + убийство + пул оверлеев (GameScene подключает) */
 export interface ElementEffectHost {
   enemies: Phaser.GameObjects.Group;
   killEnemy: (enemy: any) => void;
+  overlays: OverlayBridge;
 }
 
 /** Одна нарисованная зона (штрих) */
@@ -185,31 +194,28 @@ export class ElementEffectSystem {
       );
 
       if (kind === 'burn_death') {
-        // Сгорание: убрать статус, отдать в цепной поджог и на смерть
-        e.setTint(tintFor('none'));
-        e.statusTint = tintFor('none');
+        // Сгорание: убрать оверлей статуса, отдать в цепной поджог и на смерть
+        this.releaseOverlay(e);
         deaths.push(e);
         continue;
       }
 
-      // Tint: горение — резко (жёлтый), мокрый/сдутый — плавно к красному
-      // по остатку длительности (эффект «ослабевает», а не обрывается)
-      let tint: number;
+      // Двойник статуса: сплошная заливка цветом (setTintFill) поверх
+      // цветного арта. Горение — на STATE_FILL_ALPHA (жёлтый) до смерти;
+      // мокрый/сдутый — цвет затухает через alpha по остатку времени
+      // (эффект «ослабевает», а не обрывается).
+      let overlayKind: 'burn' | 'blown' | 'wet' | 'none' = 'none';
+      let frac = 1;
       if (kind === 'burn') {
-        tint = tintFor('burn');
+        overlayKind = 'burn';
       } else if (kind === 'blown') {
-        const frac = Math.min(1, Math.max(0, (e.airUntil - now) / cfg.airDurationMs));
-        tint = lerpColor(tintFor('none'), tintFor('blown'), frac);
+        frac = Math.min(1, Math.max(0, (e.airUntil - now) / cfg.airDurationMs));
+        overlayKind = 'blown';
       } else if (kind === 'wet') {
-        const frac = Math.min(1, Math.max(0, (e.wetUntil - now) / cfg.wetDurationMs));
-        tint = lerpColor(tintFor('none'), tintFor('wet'), frac);
-      } else {
-        tint = tintFor('none');
+        frac = Math.min(1, Math.max(0, (e.wetUntil - now) / cfg.wetDurationMs));
+        overlayKind = 'wet';
       }
-      if (tint !== e.statusTint) {
-        e.setTint(tint);
-        e.statusTint = tint;
-      }
+      this.applyOverlay(e, overlayKind, frac);
     }
 
     // Цепной поджог + смерть сгоревших (вне основного цикла — killEnemy
@@ -218,6 +224,40 @@ export class ElementEffectSystem {
     for (const e of deaths) {
       igniteNeighbors(e.x, e.y, children, cfg, now, undefined, e);
       this.host.killEnemy(e);
+    }
+  }
+
+  /**
+   * Применить «двойник» статуса: none — вернуть в пул, иначе выдать из пула
+   * и поставить сплошную заливку цветом статуса с нужной прозрачностью.
+   * Двойник синхронизирует позицию в кадровом цикле сцены.
+   */
+  private applyOverlay(e: any, kind: 'burn' | 'blown' | 'wet' | 'none', frac: number): void {
+    const host = this.host;
+    if (!host) return;
+    const ov = e.overlay as Phaser.GameObjects.Image | undefined;
+    if (kind === 'none') {
+      if (ov) {
+        host.overlays.release(ov);
+        e.overlay = undefined;
+      }
+      return;
+    }
+    const s = ov ?? host.overlays.obtain(e.x, e.y, e.scaleX);
+    if (!ov) e.overlay = s;
+    s.setTintFill(tintFor(kind));
+    s.setAlpha(STATE_FILL_ALPHA * frac);
+    s.setPosition(e.x, e.y);
+  }
+
+  /** Снять оверлей статуса (при сгорании — до ухода монстра в пул) */
+  private releaseOverlay(e: any): void {
+    const host = this.host;
+    if (!host) return;
+    const ov = e.overlay as Phaser.GameObjects.Image | undefined;
+    if (ov) {
+      host.overlays.release(ov);
+      e.overlay = undefined;
     }
   }
 

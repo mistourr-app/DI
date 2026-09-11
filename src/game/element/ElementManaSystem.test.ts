@@ -60,16 +60,19 @@ describe('ElementManaSystem', () => {
 
   it('spend списывает произвольную сумму; 0 и нехватка не трогают ману', () => {
     const m = new ElementManaSystem(makeBalance());
-    m.gainFromKills(10); // вода: 20 маны
+    const gain = GameConfig.elements.water.gainPerKill;
+    const kills = Math.ceil(5 / gain); // чтобы набрать >= 5 маны
+    const mana = kills * gain;
+    m.gainFromKills(kills);
 
     expect(m.spend('water', 0)).toBe(true);
-    expect(m.manaOf('water')).toBe(20);
+    expect(m.manaOf('water')).toBe(mana);
 
     expect(m.spend('water', 5)).toBe(true);
-    expect(m.manaOf('water')).toBe(15);
+    expect(m.manaOf('water')).toBe(mana - 5);
 
     expect(m.spend('water', 999)).toBe(false);
-    expect(m.manaOf('water')).toBe(15);
+    expect(m.manaOf('water')).toBe(mana - 5);
   });
 
   it('arm требует доступной маны; disarm снимает выбор', () => {
@@ -77,7 +80,9 @@ describe('ElementManaSystem', () => {
     expect(m.arm('fire')).toBe(false);
     expect(m.armed).toBeNull();
 
-    m.gainFromKills(10);
+    const cost = GameConfig.elements.fire.costPerUse;
+    const gain = GameConfig.elements.fire.gainPerKill;
+    m.gainFromKills(Math.ceil(cost / gain));
     expect(m.arm('fire')).toBe(true);
     expect(m.armed).toBe('fire');
     m.disarm();
@@ -99,7 +104,9 @@ describe('ElementManaSystem', () => {
   it('onBalanceChanged клэмпит ману к новой ёмкости и снимает необеспеченный выбор', () => {
     const bal = makeBalance();
     const m = new ElementManaSystem(bal);
-    m.gainFromKills(10);
+    const cost = GameConfig.elements.air.costPerUse;
+    const gain = GameConfig.elements.air.gainPerKill;
+    m.gainFromKills(Math.ceil(cost / gain));
     expect(m.arm('air')).toBe(true);
 
     // Уменьшаем ёмкость и увеличиваем стоимость

@@ -12,17 +12,16 @@ import { ElementAltarIcon } from '../game/element/ElementAltarIcon';
 import { EarthBarrierSystem } from '../game/element/EarthBarrierSystem';
 import { ElementEffectSystem } from '../game/element/ElementEffectSystem';
 import { TuningStore, type TuningSnapshot } from '../game/save/TuningStore';
+import monsterBaseUrl from '../assets/monster_base.png';
+import { StateOverlayPool } from '../game/visuals/stateOverlay';
 
-// Радиус круга в текстуре 'enemy' (SVG 20x20, circle r=8) — для масштабирования
-const ENEMY_TEX_RADIUS = 8;
+// Радиус круга в текстуре монстра — для масштабирования (32×32 px)
+const ENEMY_TEX_RADIUS = 16;
 // Период обновления дебаг-текста, мс (setText растеризует текстуру — нельзя каждый кадр)
 const DEBUG_TEXT_INTERVAL = 250;
 // Границы адаптивного кегля дебаг-панели (в игровых px = css * UI_SCALE)
 const DEBUG_FONT_MAX = Math.round(16 * UI_SCALE);
 const DEBUG_FONT_MIN = Math.round(9 * UI_SCALE);
-
-// Дефолтный tint монстра (§3.7: базовая текстура белая, цвет — tint'ом)
-const DEFAULT_ENEMY_TINT = 0xed0000;
 // Троттлинг тика статусов стихий, мс (~10 Гц)
 const FX_TICK_INTERVAL = 100;
 // Инерция воздуха (fallback-путь): отклик в зоне, затухание вне, порог сноса
@@ -79,6 +78,8 @@ export class GameScene extends Phaser.Scene {
   // Fluid simulation: физика толпы в воркере (fallback — main-thread путь)
   private fluidCtrl!: FluidSimulationController;
   private spriteById = new Map<number, Phaser.GameObjects.Image>();
+  /** Пул «двойников» статусов (сплошная заливка поверх цветного арта) */
+  private stateOverlayPool: StateOverlayPool | null = null;
   // Сглаженная длительность шага воркера, мс (EMA по кадрам)
   private simStepMs: number = 0;
   /** Текущий кегль дебаг-панели (чтобы не дёргать setStyle без изменений) */
@@ -136,10 +137,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   preload(): void {
-    // Временные ассеты для прототипа. База монстра — БЕЛАЯ (нейтральная):
-    // цвет задаётся tint'ом (§3.7) — tint × белый = ровно нужный цвет
-    // (серая база умножала бы цвет и делала его тёмным/неразличимым).
-    this.load.image('enemy', 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyMCAyMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48Y2lyY2xlIGN4PSIxMCIgY3k9IjEwIiByPSI4IiBmaWxsPSIjRkZGRkZGIi8+PC9zdmc+');
+    this.load.image('enemy', monsterBaseUrl);
   }
 
   create(): void {
@@ -161,6 +159,9 @@ export class GameScene extends Phaser.Scene {
     // Эффекты стихий (Итерация 4): зоны штрихов -> горение/замедление/отброс.
     // Оверлеи инициализируются в generateLevel() под сетку уровня
     this.elementFx = new ElementEffectSystem();
+
+    // Пул двойников статусов — заливка поверх цветного арта (Путь 1)
+    this.stateOverlayPool = new StateOverlayPool(this);
 
     // Рисование стихий на поле боя (препятствия не рисуются).
     // Земля-штрих превращается в барьер из ячеек (EarthBarrierSystem),
@@ -232,6 +233,8 @@ export class GameScene extends Phaser.Scene {
       this.elementDrawer?.destroy();
       this.earthBarrier?.destroy();
       this.elementFx?.destroy();
+      this.stateOverlayPool?.clear();
+      this.stateOverlayPool = null;
       this.clearPen();
     });
   }
@@ -655,7 +658,6 @@ export class GameScene extends Phaser.Scene {
     const s = this.add.image(0, 0, 'enemy');
     s.setActive(false).setVisible(true);
     s.setScale((this.enemySize * UI_SCALE) / ENEMY_TEX_RADIUS);
-    s.setTint(DEFAULT_ENEMY_TINT);
     // Поверх полевых монстров (см. PEN_DEPTH): толпа не перекрывается спавном
     s.setDepth(GameScene.PEN_DEPTH);
     this.penSprites.push(s);
@@ -789,18 +791,17 @@ export class GameScene extends Phaser.Scene {
     e.vy = this.enemySpeed * UI_SCALE;
     e.aid = -1;
 
-    // Статусы стихий (Итерация 4): сброс при респауне из пула + дефолтный
-    // красный tint (базовая текстура белая, цвет — tint'ом по §3.7).
-    // wetRemain/drift — состояние эффектов для fallback-пути (без воркера)
+    // Статусы стихий (Итерация 4): сброс при респауне из пула.
+    // Красный tint убран — показываем оригинальный цвет спрайта.
+    // overlay — двойник статуса (сплошная заливка), гарантированно null при спавне.
     e.burnUntil = 0;
     e.wetUntil = 0;
     e.airUntil = 0;
     e.chainIgnited = false;
-    e.statusTint = DEFAULT_ENEMY_TINT;
+    e.overlay = undefined;
     e.wetRemain = 0;
     e.driftX = 0;
     e.driftY = 0;
-    enemy.setTint(DEFAULT_ENEMY_TINT);
     // Монстры рисуются ПОВЕРХ стихий (штрихи на depth 800, земля — 700):
     // стихии — фон, толпа — поверх, вспышки бога (900) и UI — выше всех
     enemy.setDepth(850);
@@ -888,7 +889,7 @@ export class GameScene extends Phaser.Scene {
         (effect, cells, value, dirX, dirY) => {
           this.fluidCtrl?.setEffects(effect, cells, value, dirX, dirY);
         },
-        { enemies: this.enemies, killEnemy: (e) => this.killEnemy(e) }
+        { enemies: this.enemies, killEnemy: (e) => this.killEnemy(e), overlays: { obtain: (x, y, sc) => this.stateOverlayPool!.obtain(x, y, sc), release: (img) => this.stateOverlayPool!.release(img) } }
       );
     }
 
@@ -1065,6 +1066,9 @@ export class GameScene extends Phaser.Scene {
       const sprite = this.spriteById.get(id);
       if (!sprite) continue;
       sprite.setPosition(ox + d[o + 1], oy + d[o + 2]);
+      // Двойник статуса едет за монстром (один setPosition, линейно)
+      const ov = (sprite as any).overlay as Phaser.GameObjects.Image | undefined;
+      if (ov) ov.setPosition(sprite.x, sprite.y);
     }
     const syncMs = performance.now() - syncT0;
     this.syncMs = this.syncMs === 0 ? syncMs : this.syncMs * 0.9 + syncMs * 0.1;
@@ -1239,6 +1243,10 @@ export class GameScene extends Phaser.Scene {
       if (this.baseZone.contains(enemy.x, enemy.y)) {
         this.handleEnemyReachedBase(enemy);
       }
+
+      // Двойник статуса едет за монстром (fallback-путь, без воркера)
+      const ov = (enemy as any).overlay as Phaser.GameObjects.Image | undefined;
+      if (ov) ov.setPosition(enemy.x, enemy.y);
     }
   }
 
@@ -1251,6 +1259,7 @@ export class GameScene extends Phaser.Scene {
     this.updateBaseHealthFill();
 
     // Возвращаем врага в пул вместо уничтожения (нет нагрузки на GC)
+    this.releaseOverlay(enemy);
     this.enemies.killAndHide(enemy);
     this.enemyCount--;
 
@@ -2056,8 +2065,18 @@ export class GameScene extends Phaser.Scene {
       this.fluidCtrl.removeAgent(aid);
       this.spriteById.delete(aid);
     }
+    this.releaseOverlay(enemy);
     this.enemies.killAndHide(enemy);
     this.enemyCount--;
+  }
+
+  /** Вернуть двойник статуса в пул (у монстра, уходящего из боя) */
+  private releaseOverlay(enemy: any): void {
+    const ov = enemy?.overlay;
+    if (ov) {
+      this.stateOverlayPool?.release(ov);
+      enemy.overlay = undefined;
+    }
   }
 
   /** Белая вспышка бога: ядро + расширяющееся кольцо зоны поражения.
