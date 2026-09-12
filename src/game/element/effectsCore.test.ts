@@ -121,6 +121,13 @@ describe('effectsCore', () => {
       expect(ignited.length).toBe(cfg.maxIgnitePerDeath);
     });
 
+    it('maxIgnitePerDeath=1: огонь передаётся только одному монстру', () => {
+      const enemies = Array.from({ length: 10 }, (_, i) => enemy(i * 5, 0));
+      const ignited = igniteNeighbors(0, 0, enemies, { ...cfg, spreadChance: 1, maxIgnitePerDeath: 1 }, 1000, () => 0);
+      expect(ignited.length).toBe(1);
+      expect(ignited[0].chainIgnited).toBe(true);
+    });
+
     it('уважает шанс spreadChance (random >= chance — пропуск)', () => {
       const enemies = [enemy(0, 0), enemy(1, 0), enemy(2, 0), enemy(3, 0)];
       // random=0.5, chance=0.4 -> все пропущены (0.5 >= 0.4)
