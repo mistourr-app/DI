@@ -18,8 +18,6 @@ import Phaser from 'phaser';
 import { UI_SCALE, fontPx } from '../config/uiScale';
 import type { GodPowerSystem } from './GodPowerSystem';
 
-const TWO_PI = Math.PI * 2;
-
 const COLOR_FILL = 0xff00ff;        // ярко-розовый / маджента
 const COLOR_BG = 0x000000;          // пустой бар — чёрный
 const COLOR_RING_DIM = 0x7a2f7a;    // приглушённая обводка
@@ -70,12 +68,12 @@ export class GodPowerIcon {
     this.glow = scene.add.graphics().setPosition(x, y);
     this.glow.setBlendMode(Phaser.BlendModes.ADD);
 
-    this.bg = scene.add.arc(x, y, radius, 0, TWO_PI, false, COLOR_BG, 1);
+    this.bg = scene.add.circle(x, y, radius, COLOR_BG, 1);
     this.bg.setStrokeStyle(2 * UI_SCALE, COLOR_RING_DIM);
 
     this.fill = scene.add.graphics().setPosition(x, y);
 
-    this.ring = scene.add.arc(x, y, radius).setFillStyle(0, 0);
+    this.ring = scene.add.circle(x, y, radius, 0x000000, 0);
     this.ring.setStrokeStyle(2 * UI_SCALE, COLOR_RING_DIM);
 
     this.bolt = scene.add.text(x, y - radius * 0.05, '⚡', {

@@ -1,9 +1,9 @@
 // ============================================================
 // ElementAltarIcon — алтарь стихии в зоне базы (Итерация 1).
-// Заполнение по аналогии с GodPowerIcon: круг чёрный, заряд
+// Заполнение по аналогии с GodPowerIcon: круг чёрный полупрозрачный, заряд
 // наливается СНИЗУ ВВЕРХ цветом САМОЙ стихии (не маджента).
 // Состояния:
-//   частичный — чёрный круг + сегмент-заливка цвета стихии;
+//   частичный — полупрозрачный чёрный круг + сегмент-заливка цвета стихии;
 //   достаточно маны (canUse) — иконка яркая, кольцо цветом стихии;
 //   не хватает — иконка и кольцо затемнены (alpha 0.35);
 //   полный    — лёгкая пульсация заливки;
@@ -17,8 +17,10 @@ import Phaser from 'phaser';
 import { UI_SCALE } from '../config/uiScale';
 import type { ElementType } from '../config/GameConfig';
 
-const TWO_PI = Math.PI * 2;
-const COLOR_BG = 0x000000; // пустой бар — чёрный
+const COLOR_BG = 0x000000; // фон под иконкой — чёрный ПОЛУПРОЗРАЧНЫЙ
+// Альфа фона: святая земля базы просвечивает сквозь диск (фон не сплошная
+// заглушка, а мягкая тёмная подложка под иконку и заливку)
+const BG_ALPHA = 0.5;
 
 export interface ElementAltarOptions {
   key: ElementType;
@@ -55,13 +57,17 @@ export class ElementAltarIcon {
     this.opts = opts;
     this.radius = radius;
 
-    this.bg = scene.add.arc(x, y, radius, 0, TWO_PI, false, COLOR_BG, 1);
+    // Чёрный ПОЛУПРОЗРАЧНЫЙ круг под иконкой и заливкой, ПОДТВЕРЖДЕНО: при
+    // включённом fade заливка и эмодзи читаются поверх тёмной подложки, а
+    // зелёная земля базы мягко просвечивает сквозь неё. Создаётся раньше
+    // остальных частей — на глубине под ними.
+    this.bg = scene.add.circle(x, y, radius, COLOR_BG, BG_ALPHA);
 
     // Заливка рисуется в ЛОКАЛЬНЫХ координатах вокруг (0,0),
     // Graphics позиционируется в центр — иначе setScale разъезжает контент
     this.fill = scene.add.graphics().setPosition(x, y);
 
-    this.ring = scene.add.arc(x, y, radius).setFillStyle(0, 0);
+    this.ring = scene.add.circle(x, y, radius, 0x000000, 0);
 
     this.emoji = scene.add.text(x, y, opts.emoji, {
       font: `${Math.round(radius * 0.9)}px Arial`,

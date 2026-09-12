@@ -15,6 +15,10 @@ import { TuningStore, type TuningSnapshot } from '../game/save/TuningStore';
 import monsterBaseUrl from '../assets/monster_base.png';
 import obstaclesBlobUrl from '../assets/obstacles_blob.png';
 import groundBaseUrl from '../assets/ground_base.png';
+import groundInfernoUrl from '../assets/ground_inferno.png';
+import groundInfernoFadeUrl from '../assets/ground_inferno_fade.png';
+import groundHolyUrl from '../assets/ground_holy.png';
+import groundHolyFadeUrl from '../assets/ground_holy_fade.png';
 import { StateOverlayPool } from '../game/visuals/stateOverlay';
 import { frameIndexForCell } from '../game/visuals/blobTiles';
 import { ensureObstacleAtlas } from '../game/visuals/blobAtlas';
@@ -32,6 +36,13 @@ const FX_TICK_INTERVAL = 100;
 const AIR_RESPONSE = 0.35;
 const AIR_DAMP = 0.97;
 const MIN_DRIFT_SQ = 0.0025;
+// Глубина фоновых текстур зон (загон/поле/база): над фоном (0), под препятствиями (600)
+const GROUND_DEPTH = 100;
+// Fade-ряды перекрывают ground_base на ±1 тайл, чтобы смешать переход
+const FADE_DEPTH = 108;
+// Вспышки попаданий/укусов: выше фоновых тайлов (100/108), ниже
+// препятствий (600) — не обрезаются верхней кромкой зоны базы
+const HIT_EFFECT_DEPTH = 300;
 // Препятствия: блоб-тайлы под землёй (700) и штрихами (800), над фоном (0)
 const OBSTACLE_DEPTH = 600;
 
@@ -48,6 +59,14 @@ export class GameScene extends Phaser.Scene {
   private zoneGraphics!: Phaser.GameObjects.Graphics;
   /** Текстура земли на поле боя (tileSprite, загон и база не покрываются) */
   private groundTile: Phaser.GameObjects.TileSprite | null = null;
+  /** Текстура загона (ground-inferno) — полоса у верхней кромки поля боя */
+  private penTile: Phaser.GameObjects.TileSprite | null = null;
+  /** Fade-переход загона в поле (ground-inferno-fade), ряд сразу под загоном */
+  private infernoFadeTile: Phaser.GameObjects.TileSprite | null = null;
+  /** Fade-переход поля в базу (ground-holy-fade), ряд над зоной базы */
+  private holyFadeTile: Phaser.GameObjects.TileSprite | null = null;
+  /** Текстура зоны базы (ground-holy), создаётся ДО baseHealthFill (он поверх) */
+  private holyTile: Phaser.GameObjects.TileSprite | null = null;
   
   // Настройки спавна врагов
   private currentLevel: number = 1;          // Текущий уровень (1..MAX_LEVEL)
@@ -115,6 +134,8 @@ export class GameScene extends Phaser.Scene {
   private pendingBiteCount = 0;
   /** Индикатор здоровья базы: заливка зоны базы цветом снизу вверх (0 HP = полная) */
   private baseHealthFill: Phaser.GameObjects.Rectangle | null = null;
+  /** Жёлтая линия максимума здоровья базы у верхней кромки зоны базы */
+  private baseHealthLine: Phaser.GameObjects.Rectangle | null = null;
   /** Загон монстров: спрайты очереди у верхней кромки (оставшиеся), не в бою */
   private penSprites: Phaser.GameObjects.Image[] = [];
 
@@ -124,11 +145,15 @@ export class GameScene extends Phaser.Scene {
   private static readonly COLOR_BATTLEFIELD_BG = 0x0a0a1a;
   private static readonly COLOR_BASE_BG = 0x0a1a0a;
   /** Цвет индикатора здоровья базы: заливка зоны базы снизу вверх (0 HP = полная) */
-  private static readonly COLOR_BASE_HEALTH = 0x461b1b;
+  private static readonly COLOR_BASE_HEALTH = 0xb70000;
+  /** Жёлтая линия максимума здоровья (верхняя кромка зоны базы) */
+  private static readonly COLOR_BASE_HEALTH_MAX = 0xffd700;
   /** Цвет фона загона монстров (полоса у верхней кромки поля боя) */
   private static readonly COLOR_PEN_BG = 0x1c1c28;
   /** Высота загона монстров, css-px (полоса на всю ширину поля боя) */
   private static readonly PEN_HEIGHT = 64;
+  /** Высота fade-полосы перехода: один нативный ряд тайла 64×32 (загон и база) */
+  private static readonly FADE_H = 32;
   /** Потолок видимой «толпы» в загоне (перф; десктоп не приоритетная платформа) */
   private static readonly PEN_CAP_MAX = 1000;
   /** Спад плотности градиента загона: каждый ряд выше — доля 0.6 от нижнего */
@@ -155,6 +180,11 @@ export class GameScene extends Phaser.Scene {
     });
     // Текстура земли для заливки поля боя (загон и база — свои текстуры)
     this.load.image('ground-base', groundBaseUrl);
+    // Текстуры зон: загон (инферно) и база (святая), каждая с fade-переходом
+    this.load.image('ground-inferno', groundInfernoUrl);
+    this.load.image('ground-inferno-fade', groundInfernoFadeUrl);
+    this.load.image('ground-holy', groundHolyUrl);
+    this.load.image('ground-holy-fade', groundHolyFadeUrl);
   }
 
   create(): void {
@@ -374,8 +404,9 @@ export class GameScene extends Phaser.Scene {
     const screenHeight = this.cameras.main.height;
 
     // Весь статичный фон — ОДИН Graphics (один draw call вместо пяти):
-    // чёрный фон для арта окружения, игровое поле, поле боя, зона базы,
-    // разделительная линия. Порядок команд = порядок слоёв.
+    // чёрный фон для арта окружения, игровое поле, поле боя, загон и зона
+    // базы. Плоские заливки — фолбэк ПОД непрозрачными текстурами зон.
+    // Порядок команд = порядок слоёв.
     const g = this.add.graphics();
 
     // 1. Чёрный фон на ВЕСЬ экран (для арта окружения)
@@ -403,34 +434,77 @@ export class GameScene extends Phaser.Scene {
     );
 
     // 3.1. Загон монстров: полоса у верхней кромки поля боя (оставшиеся).
-    // Спрайты очереди рисуются поверх (depth 850). Нижняя граница — линия.
+    // Спрайты очереди рисуются поверх (depth 850). Плоская заливка — фолбэк
+    // под непрозрачной текстурой ground-inferno (код ниже).
     const penH = GameScene.PEN_HEIGHT * UI_SCALE;
+    const fadeH = GameScene.FADE_H;
+    const z = this.battlefieldZone;
     g.fillStyle(GameScene.COLOR_PEN_BG, 1);
-    g.fillRect(this.battlefieldZone.x, this.battlefieldZone.y, this.battlefieldZone.width, penH);
-    g.lineStyle(2 * UI_SCALE, 0x00ffff, 0.35);
-    g.beginPath();
-    g.moveTo(this.battlefieldZone.x, this.battlefieldZone.y + penH);
-    g.lineTo(this.battlefieldZone.x + this.battlefieldZone.width, this.battlefieldZone.y + penH);
-    g.strokePath();
+    g.fillRect(z.x, z.y, z.width, penH);
 
-    // 3.2. Заливка поля боя текстурой земли (ниже загона, база не входит).
-    // tileSprite повторяет текстуру 64×64. Глубина: над фоном (0), под
-    // препятствиями (600), землёй (700), штрихами (800) и монстрами (850).
-    if (this.groundTile) {
-      this.groundTile.destroy();
-      this.groundTile = null;
-    }
-    const fieldH = this.battlefieldZone.height - penH;
-    this.groundTile = this.add.tileSprite(
-      this.battlefieldZone.x + this.battlefieldZone.width / 2,
-      this.battlefieldZone.y + penH + fieldH / 2,
-      this.battlefieldZone.width,
-      fieldH,
-      'ground-base'
+    // 3.2. Заливка зон фоновыми текстурами (по одной tileSprite на зону).
+    // Вертикальный стек поля боя сверху вниз:
+    //   загон (inferno) → земля (ground_base, ВЕСЬ низ под загоном) →
+    //   база (holy)
+    // Fade-ряды НЕ занимают отдельные полосы: они рисуются ПОВЕРХ ground_base
+    // у границ (ground-inferno-fade сразу под загоном, ground-holy-fade над
+    // базой) и смешивают текстуры плавным переходом за счёт собственной альфы.
+    // Глубина: над фоном (0), fade (108) выше земли (100), под
+    // препятствиями (600), землёй-барьером (700), штрихами (800) и монстрами (850).
+    if (this.penTile) { this.penTile.destroy(); this.penTile = null; }
+    if (this.infernoFadeTile) { this.infernoFadeTile.destroy(); this.infernoFadeTile = null; }
+    if (this.groundTile) { this.groundTile.destroy(); this.groundTile = null; }
+    if (this.holyFadeTile) { this.holyFadeTile.destroy(); this.holyFadeTile = null; }
+    if (this.holyTile) { this.holyTile.destroy(); this.holyTile = null; }
+
+    // Загон: непрозрачная «инферно»-земля
+    this.penTile = this.add.tileSprite(
+      z.x + z.width / 2,
+      z.y + penH / 2,
+      z.width,
+      penH,
+      'ground-inferno'
     );
-    this.groundTile.setDepth(100);
+    this.penTile.setDepth(GROUND_DEPTH);
 
-    // 4. Зона базы
+    // Земля: вся полоса ниже загона (ground_base, включая участки под fade)
+    const fieldH = z.height - penH;
+    if (fieldH >= 1) {
+      this.groundTile = this.add.tileSprite(
+        z.x + z.width / 2,
+        z.y + penH + fieldH / 2,
+        z.width,
+        fieldH,
+        'ground-base'
+      );
+      this.groundTile.setDepth(GROUND_DEPTH);
+    }
+
+    // Fade загона: ряд ПОВЕРХ земли у верхней границы загона (топ непрозрачен —
+    // примыкает к «инферно» загона, к низу прозрачен и показывает землю).
+    this.infernoFadeTile = this.add.tileSprite(
+      z.x + z.width / 2,
+      z.y + penH + fadeH / 2,
+      z.width,
+      fadeH,
+      'ground-inferno-fade'
+    );
+    this.infernoFadeTile.setDepth(FADE_DEPTH);
+
+    // Fade базы: ряд ПОВЕРХ земли у нижней границы поля боя (топ прозрачен —
+    // видна земля, к низу плотен и примыкает к «святой» земле базы).
+    this.holyFadeTile = this.add.tileSprite(
+      z.x + z.width / 2,
+      z.y + z.height - fadeH / 2,
+      z.width,
+      fadeH,
+      'ground-holy-fade'
+    );
+    this.holyFadeTile.setDepth(FADE_DEPTH);
+
+    // 4. Зона базы. Плоская заливка — фолбэк; поверх ляжет текстура
+    // ground-holy (создаётся ниже, ПОСЛЕ zoneGraphics, но ДО baseHealthFill —
+    // заливка здоровья и алтари рендерятся поверх текстуры).
     g.fillStyle(GameScene.COLOR_BASE_BG, 1);
     g.fillRect(
       this.baseZone.x,
@@ -439,16 +513,23 @@ export class GameScene extends Phaser.Scene {
       this.baseZone.height
     );
 
-    // 5. Разделительная линия между полем боя и базой
-    g.lineStyle(1 * UI_SCALE, 0x00ffff, 0.3);
-    g.beginPath();
-    g.moveTo(this.baseZone.x, this.baseZone.y);
-    g.lineTo(this.baseZone.x + this.baseZone.width, this.baseZone.y);
-    g.strokePath();
-
     this.zoneGraphics = g;
 
-    // Индикатор здоровья базы: заливка зоны базы цветом 461B1B СНИЗУ ВВЕРХ.
+    // Зона базы: святая земля. Depth 0 (по умолчанию), создаётся сразу после
+    // zoneGraphics и ПЕРЕД baseHealthFill: фон базы ниже заливки здоровья,
+    // которая в свою очередь ниже алтарей (createElements).
+    // Overshoot +2px по высоте: на точной границе (roundPixels) WebGL
+    // оставляет 1px-полосу фолбэк-заливки у нижнего края экрана.
+    // Origin (0,0): не вылезает за игровую область по бокам.
+    this.holyTile = this.add.tileSprite(
+      this.baseZone.x,
+      this.baseZone.y,
+      this.baseZone.width,
+      this.baseZone.height + 2,
+      'ground-holy'
+    ).setOrigin(0, 0);
+
+    // Индикатор здоровья базы: заливка зоны базы цветом B70000 СНИЗУ ВВЕРХ.
     // Высота = доля потерянного здоровья (1 - HP/MAX): полная заливка = HP 0.
     // Прямоугольник фиксирован по размеру, высота — через scaleY (без
     // пересоздания геометрии каждый кадр). Ниже монстров (850) и UI.
@@ -462,12 +543,30 @@ export class GameScene extends Phaser.Scene {
       this.baseZone.width,
       this.baseZone.height,
       GameScene.COLOR_BASE_HEALTH,
-      0.85
+      0.5
     );
     fill.setOrigin(0.5, 1);
     // Depth 0 (по умолчанию): создаётся в createZoneVisuals ДО алтарей
     // (createElements) — рендерится ПОД ними, но над фоном зоны базы
     this.baseHealthFill = fill;
+
+    // Тонкая жёлтая линия максимума здоровья у ВЕРХНЕЙ кромки зоны базы.
+    // При полном HP заливка пуста, линия показывает уровень «полного» бара.
+    // Создаётся ПОСЛЕ baseHealthFill — рендерится поверх (и под алтарями).
+    // Яркая (без альфы), чтобы читаться поверх священной зелёной земли.
+    if (this.baseHealthLine) {
+      this.baseHealthLine.destroy();
+      this.baseHealthLine = null;
+    }
+    const line = this.add.rectangle(
+      this.baseZone.x + this.baseZone.width / 2,
+      this.baseZone.y,
+      this.baseZone.width,
+      2,
+      GameScene.COLOR_BASE_HEALTH_MAX,
+      1
+    );
+    this.baseHealthLine = line;
     this.updateBaseHealthFill();
   }
 
@@ -1364,6 +1463,10 @@ export class GameScene extends Phaser.Scene {
   private createHitEffect(x: number, y: number, radiusMul = 1): void {
     const effect = this.add.circle(x, y, 20 * UI_SCALE * radiusMul, 0xffff00);
     effect.setAlpha(0.7);
+    // Вспышка расширяется ДАЛЬШЕ верхней кромки зоны базы (y < 703), где
+    // её иначе перекрывали бы фоновые тайлы поля (depth 100/108) — придаём
+    // спрайту глубину над ними, чтобы не было «среза» на границе базы
+    effect.setDepth(HIT_EFFECT_DEPTH);
     
     this.tweens.add({
       targets: effect,
