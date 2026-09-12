@@ -174,7 +174,6 @@ export class GameScene extends Phaser.Scene {
 
   // Константы
   private static readonly BATTLEFIELD_RATIO = 5 / 6;
-  private static readonly BASE_RATIO = 1 / 6;
   private static readonly COLOR_BATTLEFIELD_BG = 0x0a0a1a;
   private static readonly COLOR_BASE_BG = 0x0a1a0a;
   /** Цвет фона загона монстров (полоса у верхней кромки поля боя) */
@@ -219,18 +218,12 @@ export class GameScene extends Phaser.Scene {
 
   preload(): void {
     this.load.image('enemy', monsterBaseUrl);
-    // Блоб-тайлсет препятствий художника: 47 кадров 16×16, 8×6.
+    // Блоб-тайлсеты художника грузятся КАК ИЗОБРАЖЕНИЯ: spritesheet
+    // регистрируется в create() с размером кадра, выведенным из атласа
+    // (ширина/8) — работают и старые кадры 16px, и новые 32px (×2 ассеты).
     // Если файла нет — процедурный атлас (ensureObstacleAtlas) как фолбэк.
-    this.load.spritesheet('obstacle-blob', obstaclesBlobUrl, {
-      frameWidth: 16,
-      frameHeight: 16
-    });
-    // Огненный блоб-тайлсет (поджог фронтом инферно): тот же формат,
-    // фолбэк — процедурный огненный атлас (ensureObstacleInfernoAtlas).
-    this.load.spritesheet('obstacle-blob-inferno', obstaclesBlobInfernoUrl, {
-      frameWidth: 16,
-      frameHeight: 16
-    });
+    this.load.image('obstacle-blob-src', obstaclesBlobUrl);
+    this.load.image('obstacle-blob-inferno-src', obstaclesBlobInfernoUrl);
     // Текстура земли для заливки поля боя (загон и база — свои текстуры)
     this.load.image('ground-base', groundBaseUrl);
     // Текстуры зон: загон (инферно) и база (святая), каждая с fade-переходом
@@ -301,6 +294,10 @@ export class GameScene extends Phaser.Scene {
 
     // Генерация уровня по seed (локальные координаты поля боя)
     this.levelGenerator = new LevelGenerator();
+    // Блоб-шиты художника: spritesheet с размером кадра из атласа
+    // (до генерации — renderObstacles читает текстуру)
+    this.setupBlobSheet('obstacle-blob', 'obstacle-blob-src');
+    this.setupBlobSheet('obstacle-blob-inferno', 'obstacle-blob-inferno-src');
     this.generateLevel();
 
     // Debug текст для информации
@@ -423,17 +420,20 @@ export class GameScene extends Phaser.Scene {
     let gameY: number;
 
     if (screenRatio > gameRatio) {
-      // Экран шире → игровое поле занимает ВСЮ высоту, центрируется по горизонтали
+      // Экран шире → игровое поле занимает ВСЮ высоту, центрируется по горизонтали.
+      // Ширина ОКРУГЛЯЕТСЯ ВВЕРХ до кратной 16: cellSize сетки = 16px ровно,
+      // тайлы в целых позициях — без вертикальных/горизонтальных полос
+      // (дробный cellSize давал швы арта на субпиксельном рендере).
       gameHeight = screenHeight;
-      gameWidth = screenHeight * gameRatio;
-      gameX = (screenWidth - gameWidth) / 2;
+      gameWidth = Math.ceil((screenHeight * gameRatio) / 16) * 16;
+      gameX = Math.round((screenWidth - gameWidth) / 2);
       gameY = 0;
     } else {
-      // Экран уже → игровое поле занимает ВСЮ ширину, центрируется по вертикали
+      // Экран уже → игровое поле занимает ВСЮ ширину (канвас уже кратен 16)
       gameWidth = screenWidth;
-      gameHeight = screenWidth / gameRatio;
+      gameHeight = Math.round(screenWidth / gameRatio);
       gameX = 0;
-      gameY = (screenHeight - gameHeight) / 2;
+      gameY = Math.round((screenHeight - gameHeight) / 2);
     }
 
     // Игровое поле (9:19.5)
@@ -444,15 +444,15 @@ export class GameScene extends Phaser.Scene {
       gameX,
       gameY,
       gameWidth,
-      gameHeight * GameScene.BATTLEFIELD_RATIO
+      Math.round(gameHeight * GameScene.BATTLEFIELD_RATIO)
     );
 
     // Зона базы (1/6 высоты игрового поля)
     this.baseZone = new Phaser.Geom.Rectangle(
       gameX,
-      gameY + this.battlefieldZone.height,
+      this.battlefieldZone.y + this.battlefieldZone.height,
       gameWidth,
-      gameHeight * GameScene.BASE_RATIO
+      gameHeight - this.battlefieldZone.height
     );
   }
   
@@ -1054,6 +1054,19 @@ export class GameScene extends Phaser.Scene {
 
   // --- Генерация уровня ---
 
+  /**
+   * Регистрирует блоб-шит художника как spritesheet с размером кадра,
+   * выведенным из атласа (каноническая раскладка — 8 колонок). Пропускается,
+   * если файла нет (фолбэк — процедурный атлас) или шит уже зарегистрирован.
+   */
+  private setupBlobSheet(key: string, srcKey: string): void {
+    if (this.textures.exists(key) || !this.textures.exists(srcKey)) return;
+    const src = this.textures.get(srcKey).getSourceImage() as HTMLImageElement;
+    if (!src.width || !src.height) return;
+    const frame = Math.round(src.width / 8);
+    this.textures.addSpriteSheet(key, src, { frameWidth: frame, frameHeight: frame });
+  }
+
   private generateLevel(): void {
     const zone = this.battlefieldZone;
     this.level = this.levelGenerator.generate({
@@ -1140,6 +1153,9 @@ export class GameScene extends Phaser.Scene {
     const key = ensureObstacleAtlas(this);
     // Огненный слой — только если ручной шит художника загружен
     const fireKey = ensureObstacleInfernoAtlas(this);
+    // Размер кадра блоб-атласа (каноническая раскладка — 8 колонок):
+    // 32px для новых ассетов ×2, 16px — для старых (переходный период)
+    const frameSize = this.textures.get(key).getSourceImage().width / 8;
     const z = this.battlefieldZone;
     const ox = z.x;
     const oy = z.y;
@@ -1147,6 +1163,8 @@ export class GameScene extends Phaser.Scene {
 
     // Блоб-тайлы: по спрайту на занятую клетку, кадр по 8 соседям.
     // Один атлас -> один батч, статично, рисуется разово на уровень.
+    // Масштаб = cellSize/frameSize: кадры рендерятся ровно в клетку.
+    const tileScale = cf.cellSize / frameSize;
     const group = this.add.group();
     const blocked = cf.blocked;
     for (let cy = 0; cy < cf.rows; cy++) {
@@ -1160,6 +1178,7 @@ export class GameScene extends Phaser.Scene {
           key,
           frame
         );
+        s.setScale(tileScale);
         s.setDepth(OBSTACLE_DEPTH);
         group.add(s);
       }
@@ -1171,7 +1190,7 @@ export class GameScene extends Phaser.Scene {
     // фронта» (жёсткая + градиентная полоса размытия) — перекрас плавный
     // и непрерывный, стоимость маски не зависит от числа блобов.
     if (fireKey) {
-      const margin = FIRE_LAYER_MARGIN; // полукадр 16px: клетки у кромок не обрезаются
+      const margin = FIRE_LAYER_MARGIN; // полукадр тайла: клетки у кромок не обрезаются
       const cw = Math.ceil(z.width) + margin * 2;
       const ch = Math.ceil(z.height) + margin * 2;
       const cv = document.createElement('canvas');
@@ -1180,21 +1199,22 @@ export class GameScene extends Phaser.Scene {
       const ctx = cv.getContext('2d');
       const src = this.textures.get(fireKey).getSourceImage() as HTMLImageElement;
       if (ctx) {
-      // Холст уже смещён на margin (origin спрайта = z.x - margin): кадр
-      // рисуем в мировых координатах клетки минус origin — без повторного
-      // вычитания margin, иначе слой съезжает на полтайла влево/вверх.
+      // Кадры рисуются РОВНО в клетку (размер = cellSize) из источника
+      // frameSize×frameSize. Холст смещён на margin (origin спрайта =
+      // z.x - margin): левый край кадра клетки cx — cx*cellSize в мировых,
+      // в канвасе — cx*cellSize + margin.
       for (let cy = 0; cy < cf.rows; cy++) {
         const row = cy * cf.cols;
         for (let cx = 0; cx < cf.cols; cx++) {
           if (blocked[row + cx] !== 1) continue;
           const frame = frameIndexForCell(blocked, cf.cols, cf.rows, cx, cy);
-          const fx = (frame % 8) * 16;
-          const fy = Math.floor(frame / 8) * 16;
+          const fx = (frame % 8) * frameSize;
+          const fy = Math.floor(frame / 8) * frameSize;
           ctx.drawImage(
-            src, fx, fy, 16, 16,
-            cx * cf.cellSize + half,
-            cy * cf.cellSize + half,
-            16, 16
+            src, fx, fy, frameSize, frameSize,
+            cx * cf.cellSize + margin,
+            cy * cf.cellSize + margin,
+            cf.cellSize, cf.cellSize
           );
         }
       }

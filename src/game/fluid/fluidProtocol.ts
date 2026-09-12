@@ -496,20 +496,10 @@ function rand(amt: number): number {
   return (Math.random() * 2 - 1) * amt;
 }
 
-/** Бюджет бокового дрейфа после всплытия, подшагов (~500px обхода) */
-const ESCAPE_SWEEP = 1000;
-/** Подшагов свободной вертикали подряд, прежде чем сваливаться в просвет */
-const HOVER_STEPS = 4;
 /**
- * Требуемый просвет ПОД точкой приземления при выходе из полёта, px.
- * Без этой проверки агент, едва сместившись от стены, приземляется
- * обратно на неё — и цикл «всплытие-падение» повторяется у края.
- */
-const HOVER_DEPTH_CLEAR = 10;
-/**
- * Подряд закрыты все ходы, прежде чем включать всплытие. В плотной толпе
- * боковые ходы часто блокируют СОСЕДИ (а не стены) — давка разбирается
- * сама за доли секунды, и карабканье ей не нужно. 24 подшага = 0.4 сек:
+ * Подряд закрыты все ходы, прежде чем включать спасательный хоп. В плотной
+ * толпе боковые ходы часто блокируют СОСЕДИ (а не стены) — давка
+ * разбирается сама за доли секунды, и хоп ей не нужен. 24 подшага = 0.4 сек:
  * настоящие ловушки за это время никуда не деваются.
  */
 const TRAP_STREAK = 24;
@@ -517,7 +507,7 @@ const TRAP_STREAK = 24;
  * Непробиваемая боковая граница поля, px. Должна совпадать с внешним
  * клэмпом воркера/сцены: иначе агент скользит в буферную зону между
  * границами, внешний клэмп возвращает его обратно, «успешное» скольжение
- * сбрасывает failStreak — и всплытие не включается никогда.
+ * сбрасывает failStreak — и хоп не включается никогда.
  */
 const EDGE_MARGIN = 10;
 
@@ -532,21 +522,34 @@ function clampX(x: number, fieldW: number): number {
 }
 
 /**
- * Подъём на один шаг ВВЕРХ с проверкой коллизии.
- * Сквозь препятствия карабкаться нельзя — иначе монстры «плывут» сквозь
- * блобы у краёв поля. Если выше занято — стоим этот подшаг (соседние
- * ветки продолжат искать ход вбок, а фейлсейф воркера страхует).
+ * Спасательный «хоп»: МГНОВЕННЫЙ (невидимый) перенос агента на свободную
+ * позицию над ловушкой, где вбок есть выход. Это эквивалент результата
+ * долгого подъёма вдоль стены, но БЕЗ видимого лазанья вверх — раньше
+ * монстры «ползли вверх» по стенам/краям поля до самого верха.
+ *
+ * Скан идёт по сетке вверх от позиции агента (до ESCAPE_HOP_CELLS клеток):
+ * первая свободная клетка, где слева ИЛИ справа свободно — точка посадки
+ * (агент сваливается в поток). Если выхода нет — false: агент стоит,
+ * а фейлсейф воркера (нет прогресса вниз STALL_SUBSTEPS) вернёт его на спавн.
  */
-function climbStep(
-  field: CollisionField,
-  p: { x: number; y: number },
-  r: number,
-  speed: number
-): boolean {
-  const ny = p.y - speed;
-  if (isBoxBlocked(field, p.x, ny, r)) return false;
-  p.y = ny;
-  return true;
+const ESCAPE_HOP_CELLS = 10;
+
+function escapeHop(field: CollisionField, p: { x: number; y: number }, r: number): boolean {
+  const cs = field.cellSize;
+  const probe = Math.max(r * 4, 24);
+  const yCell = Math.floor(p.y / cs);
+  for (let dy = 0; dy <= ESCAPE_HOP_CELLS; dy++) {
+    const py = (yCell - dy) * cs + cs / 2;
+    if (py < -cs * 2) break; // выше верхней кромки — дальше искать нечего
+    if (isBoxBlocked(field, p.x, py, r)) continue; // занято — ищем выше
+    const leftFree = !isBoxBlocked(field, p.x - probe, py, r);
+    const rightFree = !isBoxBlocked(field, p.x + probe, py, r);
+    if (leftFree || rightFree) {
+      p.y = py;
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -559,12 +562,11 @@ function climbStep(
  * идёт вбок ПОЛНОЙ скоростью — так поток обтекает препятствие, как вода.
  *
  * Если закрыты И вертикаль, И обе стороны подряд (дно выемки/полости или
- * сплошная плита у кромки), агент «всплывает» и переходит в спасательный
- * полёт (sweep): держит высоту над препятствием и летит вбок, пока под
- * собой не подтвердится настоящий просвет глубиной HOVER_STEPS подшагов —
- * тогда сваливается в него и возвращается к обычному поведению. Гарантия
- * выхода: над кромкой поля всё свободно. Вместе с заливкой недренируемых
- * карманов на генерации это обеспечивает прибытие 100% агентов к базе.
+ * сплошная плита у кромки), агент делает спасательный «хоп» (escapeHop):
+ * мгновенный перенос на свободную позицию над ловушкой — никакого видимого
+ * лазанья вверх. Гарантия выхода: над кромкой поля всё свободно. Вместе с
+ * заливкой недренируемых карманов на генерации это обеспечивает прибытие
+ * 100% агентов к базе.
  *
  * Мутирует p и v. Вызывается из воркера И из legacy main-пути — паритет.
  */
@@ -583,91 +585,21 @@ export function moveDownStep(
   const ny = p.y + nvy;
 
   const fieldW = field.widthPx ?? field.cols * field.cellSize;
-  const flying = avoid.sweep > 0 && avoid.value !== 0;
 
-  // --- Вертикаль свободна ---
+  // --- Вертикаль свободна: обычное падение (спасательный полёт отменён) ---
   if (!isBoxBlocked(field, nx, ny, r)) {
-    if (!flying) {
-      p.x = clampX(nx, fieldW);
-      p.y = ny;
-      v.x = nvx;
-      v.y = nvy;
-      avoid.value = 0;
-      avoid.failStreak = 0;
-      avoid.hover = 0;
-      return;
-    }
-
-    // Спасательный полёт: держим высоту, летим вбок
-    const tx = p.x + avoid.value * targetSpeed;
-    if (!outOfFieldX(tx, fieldW) && !isBoxBlocked(field, tx, p.y, r)) {
-      // Уровень впереди свободен: копим подтверждение глубины под собой
-      avoid.hover++;
-      avoid.sweep--;
-      const deepEnough =
-        avoid.hover >= HOVER_STEPS &&
-        !isBoxBlocked(field, nx, ny + HOVER_DEPTH_CLEAR, r);
-      if (deepEnough) {
-        // Просвет настоящий — сваливаемся и возвращаемся к обычному режиму
-        p.x = clampX(nx, fieldW);
-        p.y = ny;
-        v.x = nvx;
-        v.y = nvy;
-        avoid.value = 0;
-        avoid.failStreak = 0;
-        avoid.sweep = 0;
-        avoid.hover = 0;
-        return;
-      }
-      p.x = tx;
-      v.x = avoid.value * targetSpeed;
-      v.y = 0;
-      return;
-    }
-    // Впереди стена или край поля: подъём ВДОЛЬ стены (с коллизией!)
+    p.x = clampX(nx, fieldW);
+    p.y = ny;
+    v.x = nvx;
+    v.y = nvy;
+    avoid.value = 0;
+    avoid.failStreak = 0;
     avoid.hover = 0;
-    avoid.sweep--;
-    if (outOfFieldX(tx, fieldW)) {
-      avoid.value = -avoid.value;
-    }
-    if (!climbStep(field, p, r, targetSpeed)) {
-      v.x = 0;
-      v.y = 0;
-      return;
-    }
-    v.x = 0;
-    v.y = -targetSpeed;
     return;
   }
 
   // --- Вертикаль заблокирована ---
   avoid.hover = 0;
-
-  if (flying) {
-    // Летим на текущей высоте: уровень впереди свободен?
-    avoid.sweep--;
-    const tx = p.x + avoid.value * targetSpeed;
-    const outOfField = outOfFieldX(tx, fieldW);
-    if (!outOfField && !isBoxBlocked(field, tx, p.y, r)) {
-      p.x = tx;
-      v.x = avoid.value * targetSpeed;
-      v.y = 0;
-      return;
-    }
-    if (outOfField) {
-      // Край поля — разворачиваемся
-      avoid.value = -avoid.value;
-    }
-    // Впереди стена выше текущей высоты — всплываем вдоль неё (с коллизией)
-    if (!climbStep(field, p, r, targetSpeed)) {
-      v.x = 0;
-      v.y = 0;
-      return;
-    }
-    v.x = 0;
-    v.y = -targetSpeed;
-    return;
-  }
 
   // Обычное скольжение по поверхности: выбор стороны (один раз на контакт)
   if (avoid.value === 0) {
@@ -694,20 +626,19 @@ export function moveDownStep(
     avoid.value = -avoid.value;
     avoid.failStreak++;
     if (avoid.failStreak >= TRAP_STREAK) {
-      // Все ходы закрыты устойчиво — всплываем и берём бюджет полёта.
-      // Направление полёта — ОТ ближайшего бокового края, к центру:
-      // иначе агент долго карабкается вдоль стены у кромки
-      avoid.value = p.x > fieldW * 0.5 ? -1 : 1;
-      avoid.sweep = ESCAPE_SWEEP;
-      avoid.hover = 0;
-      if (!climbStep(field, p, r, targetSpeed)) {
+      // Устойчивая ловушка: спасательный ХОП вместо лазанья вверх.
+      // Мгновенный перенос над ловушкой, где вбок свободно — никакого
+      // видимого «ползания по стене» до верха экрана.
+      avoid.failStreak = 0;
+      avoid.value = 0;
+      if (escapeHop(field, p, r)) {
         v.x = 0;
         v.y = 0;
-        return;
+        return; // следующий подшаг — свободное падение с новой высоты
       }
       v.x = 0;
-      v.y = -targetSpeed;
-      return;
+      v.y = 0;
+      return; // выхода нет — фейлсейф воркера вернёт на спавн
     }
     v.x = 0;
   }

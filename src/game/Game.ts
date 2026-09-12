@@ -6,7 +6,11 @@ export class Game {
   private phaserGame: Phaser.Game | null = null;
 
   async start(): Promise<void> {
-    const w = Math.max(1, Math.round(window.innerWidth * UI_SCALE));
+    // Ширина канваса КРАТНА 16: cellSize сетки препятствий становится
+    // ровно 16px, позиции тайлов — целые. Дробный cellSize давал
+    // вертикальные/горизонтальные полосы на блобах (швы арта при
+    // субпиксельном рендере). Zoom компенсирует разницу до 8px.
+    const w = Math.max(16, Math.round((window.innerWidth * UI_SCALE) / 16) * 16);
     const h = Math.max(1, Math.round(window.innerHeight * UI_SCALE));
     // Точный подгон: канвас занимает ровно всё окно (CSS-размер = w * zoom).
     // zoom = 1/UI_SCALE округлениями даёт щели до пикселя по краям на мобильных —
@@ -47,7 +51,7 @@ export class Game {
   private handleWindowResize = (): void => {
     const g = this.phaserGame;
     if (!g) return;
-    const w = Math.max(1, Math.round(window.innerWidth * UI_SCALE));
+    const w = Math.max(16, Math.round((window.innerWidth * UI_SCALE) / 16) * 16);
     const h = Math.max(1, Math.round(window.innerHeight * UI_SCALE));
     g.scale.resize(w, h);
     g.scale.setZoom(window.innerWidth / w);

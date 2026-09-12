@@ -167,7 +167,13 @@ export class LevelGenerator {
     // ширина прохода (по умолчанию 60 px в «дизайн-масштабе»)
     const brush = Math.max(passageWidth / 2, CELL * 1.25) * unit;
 
-    const cols = Math.ceil(width / CELL);
+    // Снэп сетки к целым клеткам: cols·cellSize == width ТОЧНО. Это устраняет
+    // частичную/фантомную последнюю колонку (width не кратен CELL), из-за
+    // которой у правой кромки был систематически пустой коридор (десктоп:
+    // колонка вычищалась, мобилка: монстры лезли вверх по щели). Теперь
+    // правая колонка — полноценная и примыкает к границе поля ровно.
+    const cols = Math.max(1, Math.round(width / CELL));
+    const cellSize = width / cols;
     const rows = Math.ceil(height / CELL);
     const grid = new Uint8Array(cols * rows); // 1 = клетка занята препятствием
 
@@ -191,8 +197,8 @@ export class LevelGenerator {
     const warpFreq = 0.009;
     for (let cy = 0; cy < rows; cy++) {
       for (let cx = 0; cx < cols; cx++) {
-        const wx = cx * CELL;
-        const wy = cy * CELL;
+        const wx = cx * cellSize;
+        const wy = cy * cellSize;
         // Свободная зона только внизу: верх и бока без отступа, блобы
         // могут начинаться прямо от кромки поля
         if (wy > height - bottomMargin) continue;
@@ -228,7 +234,7 @@ export class LevelGenerator {
     // сиды схлопываются к одному виду). Структуру дают сеед-случайные
     // коридоры (шаг 2.55) — они же режут гигантские кластеры.
     if (density < 0.9) {
-      this.splitOversizedClusters(grid, cols, rows, brush, MAX_CLUSTER_RATIO);
+      this.splitOversizedClusters(grid, cols, rows, brush, cellSize, MAX_CLUSTER_RATIO);
     }
 
     // --- 2.55 Извилистые коридоры на высокой плотности ---
@@ -251,7 +257,7 @@ export class LevelGenerator {
       for (let k = 0; k < corridorCount; k++) {
         const x0 = (k + 0.15 + rng() * 0.7) * band;
         const amp = 24 + rng() * 44;
-        this.carveWindingV(grid, cols, rows, brush, x0, 0, yTo, amp);
+        this.carveWindingV(grid, cols, rows, brush, x0, 0, yTo, amp, cellSize);
       }
     }
 
@@ -259,23 +265,23 @@ export class LevelGenerator {
     // Цель гарантийного коридора — сеед-случайная (не фиксированный центр):
     // положение основного прохода уникально для каждого seed
     const passTargetX = (0.2 + rng() * 0.6) * width;
-    this.ensurePassability(grid, cols, rows, height, bottomMargin, brush, passTargetX);
+    this.ensurePassability(grid, cols, rows, height, bottomMargin, brush, cellSize, passTargetX);
 
     // --- 3.5 Заливка недренируемых карманов ---
     // Движение монстров строго вниз: любая «яма» без пути вниз/вбок к
     // нижней полосе — пожизненная ловушка. Заливаем такие клетки.
-    this.fillUndrained(grid, cols, rows, bottomMargin);
+    this.fillUndrained(grid, cols, rows, bottomMargin, cellSize);
 
     // --- 3.6 Гарантия открытых входов сверху ---
     // Заливка могла запечатать весь верхний ряд (полости под входами).
     // Тогда монстрам некуда входить — пробиваем сквозные дренажные шахты.
-    this.ensureTopEntrances(grid, cols, rows, height, bottomMargin, brush);
+    this.ensureTopEntrances(grid, cols, rows, height, bottomMargin, brush, cellSize);
 
     // --- 3.7 Свободная полоса сверху (загон монстров) ---
     // Верх полосы загона свободен от препятствий: монстры выходят из загона
     // и падают в лабиринт. Очищаем до построения полигонов — и коллизии, и
     // отрисовка не задевают загон.
-    const topFreeRows = clamp(Math.ceil(topFree / CELL), 0, rows - 1);
+    const topFreeRows = clamp(Math.ceil(topFree / cellSize), 0, rows - 1);
     for (let cy = 0; cy < topFreeRows; cy++) {
       const row = cy * cols;
       for (let cx = 0; cx < cols; cx++) {
@@ -283,20 +289,25 @@ export class LevelGenerator {
       }
     }
 
-    // --- 3.8 Фантомная полоса справа ---
-    // Сетка покрывает cols*CELL (может быть шире реального поля width).
-    // Ячейки с центром ЗА границей поля («фантомные») невидимы для игрока,
-    // но коллизионны — монстры «обходят невидимое препятствие» у правого
-    // края. Очищаем их ДО построения полигонов (и коллизии, и отрисовка).
-    for (let cy = 0; cy < rows; cy++) {
-      const row = cy * cols;
-      for (let cx = 0; cx < cols; cx++) {
-        if ((cx + 0.5) * CELL >= width) grid[row + cx] = 0;
+    // --- 3.8 Стены-кромки (фикс лазанья вдоль края) ---
+    // Между крайней стеной лабиринта и границей поля (клэмп EDGE_MARGIN)
+    // оставался узкий канал: монстр, упавший в него, не может развернуться,
+    // застревает и лезет вверх вдоль края до самого верха экрана. Со снэпом
+    // сетки крайние колонки точно примыкают к границе поля — заливаем их
+    // препятствиями (кроме загона сверху и свободной полосы снизу): канал
+    // исчезает, кромки — стены, как бортики поля. При density = 0 (пустое
+    // поле) стены не нужны — уровень остаётся полностью пустым.
+    if (density > 0 && cols >= 2) {
+      const lastRow = clamp(Math.floor((height - bottomMargin) / cellSize), 0, rows - 1);
+      for (let cy = topFreeRows; cy <= lastRow; cy++) {
+        const row = cy * cols;
+        grid[row] = 1;             // левая кромка
+        grid[row + cols - 1] = 1;  // правая кромка
       }
     }
 
     // --- 4. Контурная трассировка блобов -> сглаженные полигоны ---
-    const obstacles = this.buildPolygons(grid, cols, rows, width);
+    const obstacles = this.buildPolygons(grid, cols, rows, cellSize, width);
 
     const basePosition = { x: width / 2, y: height };
     const spawnPoints = entrances.map(e => ({ x: e.x, y: 6 }));
@@ -311,13 +322,11 @@ export class LevelGenerator {
       spawnPoints,
       obstacles,
       isBlocked: (x: number, y: number): boolean => {
-        const cx = Math.floor(x / CELL);
-        const cy = Math.floor(y / CELL);
+        const cx = Math.floor(x / cellSize);
+        const cy = Math.floor(y / cellSize);
         if (cx < 0 || cy < 0 || cx >= cols || cy >= rows) {
           return false; // вне поля боя коллизий нет
         }
-        // Фантомная полоса справа: сетка шире реального поля (cols*cell > width)
-        if (x >= width) return false;
         return grid[cy * cols + cx] === 1;
       },
       getCollisionField: (): {
@@ -329,7 +338,7 @@ export class LevelGenerator {
       } => ({
         cols,
         rows,
-        cellSize: CELL,
+        cellSize,
         // Сетка иммутабельна после генерации — отдаём ссылку без копии
         blocked: grid,
         widthPx: width
@@ -351,9 +360,10 @@ export class LevelGenerator {
     height: number,
     bottomMargin: number,
     brush: number,
+    cellSize: number,
     tx: number
   ): void {
-    const botRows = Math.min(rows - 1, Math.ceil(bottomMargin / CELL));
+    const botRows = Math.min(rows - 1, Math.ceil(bottomMargin / cellSize));
 
     // Страховка: если шум закрыл ВЕСЬ верхний ряд сплошняком, входа
     // сверху не будет вовсе — освобождаем центральные клетки ряда
@@ -428,8 +438,8 @@ export class LevelGenerator {
         let bestD = Infinity;
         for (let i = 0; i < grid.length; i++) {
           if (dist[i] >= 0) {
-            const dxp = (i % cols) * CELL + CELL / 2 - tx;
-            const dyp = ((i / cols) | 0) * CELL + CELL / 2 - ty;
+            const dxp = (i % cols) * cellSize + cellSize / 2 - tx;
+            const dyp = ((i / cols) | 0) * cellSize + cellSize / 2 - ty;
             const dd = dxp * dxp + dyp * dyp;
             if (dd < bestD) {
               bestD = dd;
@@ -438,9 +448,9 @@ export class LevelGenerator {
           }
         }
         if (bestI >= 0) {
-          const sx = (bestI % cols) * CELL + CELL / 2;
-          const sy = ((bestI / cols) | 0) * CELL + CELL / 2;
-          this.carveCorridor(grid, cols, rows, sx, sy, tx, ty, brush);
+          const sx = (bestI % cols) * cellSize + cellSize / 2;
+          const sy = ((bestI / cols) | 0) * cellSize + cellSize / 2;
+          this.carveCorridor(grid, cols, rows, sx, sy, tx, ty, brush, cellSize);
         }
       }
 
@@ -528,17 +538,18 @@ export class LevelGenerator {
     rows: number,
     px: number,
     py: number,
-    r: number
+    r: number,
+    cellSize: number
   ): void {
     const rSq = r * r;
-    const cx0 = Math.max(0, Math.floor((px - r) / CELL));
-    const cx1 = Math.min(cols - 1, Math.floor((px + r) / CELL));
-    const cy0 = Math.max(0, Math.floor((py - r) / CELL));
-    const cy1 = Math.min(rows - 1, Math.floor((py + r) / CELL));
+    const cx0 = Math.max(0, Math.floor((px - r) / cellSize));
+    const cx1 = Math.min(cols - 1, Math.floor((px + r) / cellSize));
+    const cy0 = Math.max(0, Math.floor((py - r) / cellSize));
+    const cy1 = Math.min(rows - 1, Math.floor((py + r) / cellSize));
     for (let cy = cy0; cy <= cy1; cy++) {
       for (let cx = cx0; cx <= cx1; cx++) {
-        const wx = cx * CELL + CELL / 2;
-        const wy = cy * CELL + CELL / 2;
+        const wx = cx * cellSize + cellSize / 2;
+        const wy = cy * cellSize + cellSize / 2;
         const ddx = wx - px;
         const ddy = wy - py;
         if (ddx * ddx + ddy * ddy <= rSq) {
@@ -557,7 +568,8 @@ export class LevelGenerator {
     xCenter: number,
     yFrom: number,
     yTo: number,
-    amplitude: number
+    amplitude: number,
+    cellSize: number
   ): void {
     const span = Math.max(CELL, yTo - yFrom);
     const freq = (Math.PI * 3) / span;
@@ -566,7 +578,7 @@ export class LevelGenerator {
     for (let s = 0; s <= steps; s++) {
       const y = yFrom + ((yTo - yFrom) * s) / steps;
       const x = xCenter + Math.sin(y * freq + phase) * amplitude;
-      this.carveDisc(grid, cols, rows, x, y, r);
+      this.carveDisc(grid, cols, rows, x, y, r, cellSize);
     }
   }
 
@@ -579,7 +591,8 @@ export class LevelGenerator {
     yCenter: number,
     xFrom: number,
     xTo: number,
-    amplitude: number
+    amplitude: number,
+    cellSize: number
   ): void {
     const span = Math.max(CELL, xTo - xFrom);
     const freq = (Math.PI * 3) / span;
@@ -588,7 +601,7 @@ export class LevelGenerator {
     for (let s = 0; s <= steps; s++) {
       const x = xFrom + ((xTo - xFrom) * s) / steps;
       const y = yCenter + Math.sin(x * freq + phase) * amplitude;
-      this.carveDisc(grid, cols, rows, x, y, r);
+      this.carveDisc(grid, cols, rows, x, y, r, cellSize);
     }
   }
 
@@ -602,6 +615,7 @@ export class LevelGenerator {
     cols: number,
     rows: number,
     brush: number,
+    cellSize: number,
     maxRatio: number
   ): void {
     const maxCells = Math.floor(cols * rows * maxRatio);
@@ -647,23 +661,25 @@ export class LevelGenerator {
       if (worstSize <= maxCells || !worstBox) return;
 
       const [minX, minY, maxX, maxY] = worstBox;
-      const amp = Math.min((iter % 2 === 0 ? maxX - minX : maxY - minY) * CELL * 0.35, 64);
+      const amp = Math.min((iter % 2 === 0 ? maxX - minX : maxY - minY) * cellSize * 0.35, 64);
       if (iter % 2 === 0) {
         // Вертикальный извилистый каньон через блоб (только его bbox!)
         this.carveWindingV(
           grid, cols, rows, brush,
-          ((minX + maxX) / 2 + 0.5) * CELL,
-          minY * CELL - brush,
-          (maxY + 1) * CELL + brush,
-          amp
+          ((minX + maxX) / 2 + 0.5) * cellSize,
+          minY * cellSize - brush,
+          (maxY + 1) * cellSize + brush,
+          amp,
+          cellSize
         );
       } else {
         this.carveWindingH(
           grid, cols, rows, brush,
-          ((minY + maxY) / 2 + 0.5) * CELL,
-          minX * CELL - brush,
-          (maxX + 1) * CELL + brush,
-          amp
+          ((minY + maxY) / 2 + 0.5) * cellSize,
+          minX * cellSize - brush,
+          (maxX + 1) * cellSize + brush,
+          amp,
+          cellSize
         );
       }
     }
@@ -682,7 +698,8 @@ export class LevelGenerator {
     rows: number,
     height: number,
     bottomMargin: number,
-    brush: number
+    brush: number,
+    cellSize: number
   ): void {
     let open = false;
     for (let cx = 0; cx < cols; cx++) {
@@ -693,15 +710,15 @@ export class LevelGenerator {
     }
     if (open) return;
 
-    const shafts = Math.max(2, Math.floor((cols * CELL) / 240));
+    const shafts = Math.max(2, Math.floor((cols * cellSize) / 240));
     const ty = height - bottomMargin * 0.5;
     for (let k = 0; k < shafts; k++) {
-      const x = ((k + 0.5) / shafts) * cols * CELL;
-      this.carveCorridor(grid, cols, rows, x, -CELL, x, ty, brush);
+      const x = ((k + 0.5) / shafts) * cols * cellSize;
+      this.carveCorridor(grid, cols, rows, x, -cellSize, x, ty, brush, cellSize);
     }
 
     // Шахты освободили новые клетки у стен — финальная заливка карманов
-    this.fillUndrained(grid, cols, rows, bottomMargin);
+    this.fillUndrained(grid, cols, rows, bottomMargin, cellSize);
   }
 
   /**
@@ -716,8 +733,14 @@ export class LevelGenerator {
    * полигоны для отрисовки строятся уже после, поэтому ландшафт
    * остаётся бесшовным. Детерминизм не нарушен: чистая функция сетки.
    */
-  private fillUndrained(grid: Uint8Array, cols: number, rows: number, bottomMargin: number): number {
-    const botRows = Math.min(rows, Math.ceil(bottomMargin / CELL));
+  private fillUndrained(
+    grid: Uint8Array,
+    cols: number,
+    rows: number,
+    bottomMargin: number,
+    cellSize: number
+  ): number {
+    const botRows = Math.min(rows, Math.ceil(bottomMargin / cellSize));
     const safe = new Uint8Array(cols * rows);
 
     // Нижняя свободная полоса — сток, все её клетки безопасны
@@ -771,7 +794,8 @@ export class LevelGenerator {
     y0: number,
     x1: number,
     y1: number,
-    r: number
+    r: number,
+    cellSize: number
   ): void {
     const dx = x1 - x0;
     const dy = y1 - y0;
@@ -782,14 +806,14 @@ export class LevelGenerator {
     for (let s = 0; s <= steps; s++) {
       const px = x0 + (dx * s) / steps;
       const py = y0 + (dy * s) / steps;
-      const cx0 = Math.max(0, Math.floor((px - r) / CELL));
-      const cx1 = Math.min(cols - 1, Math.floor((px + r) / CELL));
-      const cy0 = Math.max(0, Math.floor((py - r) / CELL));
-      const cy1 = Math.min(rows - 1, Math.floor((py + r) / CELL));
+      const cx0 = Math.max(0, Math.floor((px - r) / cellSize));
+      const cx1 = Math.min(cols - 1, Math.floor((px + r) / cellSize));
+      const cy0 = Math.max(0, Math.floor((py - r) / cellSize));
+      const cy1 = Math.min(rows - 1, Math.floor((py + r) / cellSize));
       for (let cy = cy0; cy <= cy1; cy++) {
         for (let cx = cx0; cx <= cx1; cx++) {
-          const wx = cx * CELL + CELL / 2;
-          const wy = cy * CELL + CELL / 2;
+          const wx = cx * cellSize + cellSize / 2;
+          const wy = cy * cellSize + cellSize / 2;
           const ddx = wx - px;
           const ddy = wy - py;
           if (ddx * ddx + ddy * ddy <= rSq) {
@@ -811,6 +835,7 @@ export class LevelGenerator {
     grid: Uint8Array,
     cols: number,
     rows: number,
+    cellSize: number,
     fieldWidthPx?: number
   ): ObstaclePolygon[] {
     type Edge = [number, number, number, number];
@@ -833,10 +858,10 @@ export class LevelGenerator {
     for (let cy = 0; cy < rows; cy++) {
       for (let cx = 0; cx < cols; cx++) {
         if (grid[cy * cols + cx] !== 1) continue;
-        const x0 = cx * CELL;
-        const y0 = cy * CELL;
-        const x1 = x0 + CELL;
-        const y1 = y0 + CELL;
+        const x0 = cx * cellSize;
+        const y0 = cy * cellSize;
+        const x1 = x0 + cellSize;
+        const y1 = y0 + cellSize;
         const upFree = cy === 0 || grid[(cy - 1) * cols + cx] === 0;
         const rightFree = cx === cols - 1 || grid[cy * cols + cx + 1] === 0;
         const downFree = cy === rows - 1 || grid[(cy + 1) * cols + cx] === 0;
@@ -908,8 +933,8 @@ export class LevelGenerator {
         if (a.x > maxX) maxX = a.x;
       }
       const nearEdge =
-        minX <= CELL || (fieldWidthPx !== undefined && maxX >= fieldWidthPx - CELL);
-      if (Math.abs(area2) / 2 < CELL * CELL * 2 && !nearEdge) continue;
+        minX <= cellSize || (fieldWidthPx !== undefined && maxX >= fieldWidthPx - cellSize);
+      if (Math.abs(area2) / 2 < cellSize * cellSize * 2 && !nearEdge) continue;
 
       result.push({ points: pts });
     }
