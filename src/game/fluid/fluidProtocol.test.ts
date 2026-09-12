@@ -1,4 +1,4 @@
-import { waterAt, airAt, blockedByLevel, type CollisionField } from './fluidProtocol';
+import { waterAt, airAt, blockedByLevel, isBoxEarthAnySide, type CollisionField } from './fluidProtocol';
 
 function field(over: Partial<CollisionField> = {}): CollisionField {
   return {
@@ -66,5 +66,37 @@ describe('blockedByLevel (телепорт только на препятств�
     expect(blockedByLevel(f, -5, 0)).toBe(false);
     expect(blockedByLevel(f, 100, 100)).toBe(false);
     expect(blockedByLevel(f, 50, 5)).toBe(false); // widthPx=... фантомная полоса
+  });
+});
+
+describe('isBoxEarthAnySide (касание земли с любой стороны)', () => {
+  const earth = (f: CollisionField) => {
+    f.earth = new Uint8Array(16);
+    f.earth[5] = 1; // ячейка (cx=1, cy=1) = x∈[10,20), y∈[10,20)
+    return f;
+  };
+
+  it('текущая позиция внутри земли -> true', () => {
+    expect(isBoxEarthAnySide(earth(field()), 15, 15, 4, 4)).toBe(true);
+  });
+
+  it('сверху (упреждение вниз на look) -> true', () => {
+    expect(isBoxEarthAnySide(earth(field()), 15, 4, 4, 4)).toBe(true);
+  });
+
+  it('снизу (упреждение вверх на look) -> true', () => {
+    expect(isBoxEarthAnySide(earth(field()), 15, 26, 4, 4)).toBe(true);
+  });
+
+  it('слева (упреждение вправо на look) -> true', () => {
+    expect(isBoxEarthAnySide(earth(field()), 4, 15, 4, 4)).toBe(true);
+  });
+
+  it('справа (упреждение влево на look) -> true', () => {
+    expect(isBoxEarthAnySide(earth(field()), 26, 15, 4, 4)).toBe(true);
+  });
+
+  it('вне досягаемости по осям -> false', () => {
+    expect(isBoxEarthAnySide(earth(field()), 5, 5, 2, 2)).toBe(false);
   });
 });

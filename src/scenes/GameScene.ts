@@ -1284,11 +1284,17 @@ export class GameScene extends Phaser.Scene {
       const maxSpeed = ts * 1.05;
 
       // Земля-барьер (fallback): касающийся земли монстр атакует и гибнет,
-      // грызя ячейки. Паритет с воркером (упреждающий хитбокс вниз)
+      // грызя ячейки. Паритет с воркером (упреждающий хитбокс). Касание
+      // с ЛЮБОЙ стороны: текущая позиция либо упреждение по осям на look.
       const look = Math.max(ts, hitR);
+      const eb = this.earthBarrier;
       if (
-        (this.earthBarrier && this.earthBarrier.hasEarthAtBox(enemy.x, enemy.y, hitR)) ||
-        (this.earthBarrier && this.earthBarrier.hasEarthAtBox(enemy.x, enemy.y + look, hitR))
+        eb &&
+        (eb.hasEarthAtBox(enemy.x, enemy.y, hitR) ||
+          eb.hasEarthAtBox(enemy.x, enemy.y + look, hitR) ||
+          eb.hasEarthAtBox(enemy.x, enemy.y - look, hitR) ||
+          eb.hasEarthAtBox(enemy.x + look, enemy.y, hitR) ||
+          eb.hasEarthAtBox(enemy.x - look, enemy.y, hitR))
       ) {
         this.killEnemy(enemy);
         this.earthBarrier.biteCellsAround(enemy.x, enemy.y, GameConfig.earth.biteRadius * UI_SCALE);

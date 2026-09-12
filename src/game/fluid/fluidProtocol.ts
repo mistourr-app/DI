@@ -432,6 +432,28 @@ export function isBoxEarth(field: CollisionField, lx: number, ly: number, r: num
   );
 }
 
+/**
+ * Касание земли С ЛЮБОЙ стороны: текущая позиция или упреждение по осям
+ * (вверх/вниз/влево/вправо на look). Монстры грызут землю при касании,
+ * а не только подходя сверху. Диагональное касание срабатывает на один-два
+ * подшага позже — когда хитбокс войдёт в zona текущего прямоугольника
+ */
+export function isBoxEarthAnySide(
+  field: CollisionField,
+  lx: number,
+  ly: number,
+  r: number,
+  look: number
+): boolean {
+  return (
+    isBoxEarth(field, lx, ly, r) ||
+    isBoxEarth(field, lx, ly + look, r) ||
+    isBoxEarth(field, lx, ly - look, r) ||
+    isBoxEarth(field, lx + look, ly, r) ||
+    isBoxEarth(field, lx - look, ly, r)
+  );
+}
+
 /** Эффект воды: замедляет ли точка (Итерация 4). Вне сетки — нет. */
 export function waterAt(field: CollisionField, lx: number, ly: number): boolean {
   if (!field.water) return false;

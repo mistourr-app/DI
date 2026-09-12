@@ -21,7 +21,7 @@ import {
   type DispOut,
   blockedByLevel,
   isBoxBlocked,
-  isBoxEarth,
+  isBoxEarthAnySide,
   waterAt,
   airAt,
   moveDownStep
@@ -214,12 +214,10 @@ function integrate(arrivedBase: number): number {
     // Земля-барьер (Итерация 2): если хитбокс агента касается земли —
     // стоп (без обхода/всплытия), агент атакует: id в attacksScratch,
     // убирает кусок земли на main. moveDownStep не трогаем — паритет
-    // с fallback сохранён.
+    // с fallback сохранён. Касание с ЛЮБОЙ стороны (не только сверху):
+    // текущая позиция либо упреждение по осям на look.
     const look = Math.max(params.targetSpeed, hitR);
-    if (
-      isBoxEarth(field, px[s], py[s], hitR) ||
-      isBoxEarth(field, px[s], py[s] + look, hitR)
-    ) {
+    if (isBoxEarthAnySide(field, px[s], py[s], hitR, look)) {
       vx[s] = 0;
       vy[s] = 0;
       attacksScratch[attackCount++] = idOfSlot[s];
