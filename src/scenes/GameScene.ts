@@ -134,8 +134,6 @@ export class GameScene extends Phaser.Scene {
   private pendingBiteCount = 0;
   /** Индикатор здоровья базы: заливка зоны базы цветом снизу вверх (0 HP = полная) */
   private baseHealthFill: Phaser.GameObjects.Rectangle | null = null;
-  /** Жёлтая линия максимума здоровья базы у верхней кромки зоны базы */
-  private baseHealthLine: Phaser.GameObjects.Rectangle | null = null;
   /** Загон монстров: спрайты очереди у верхней кромки (оставшиеся), не в бою */
   private penSprites: Phaser.GameObjects.Image[] = [];
 
@@ -146,8 +144,6 @@ export class GameScene extends Phaser.Scene {
   private static readonly COLOR_BASE_BG = 0x0a1a0a;
   /** Цвет индикатора здоровья базы: заливка зоны базы снизу вверх (0 HP = полная) */
   private static readonly COLOR_BASE_HEALTH = 0xb70000;
-  /** Жёлтая линия максимума здоровья (верхняя кромка зоны базы) */
-  private static readonly COLOR_BASE_HEALTH_MAX = 0xffd700;
   /** Цвет фона загона монстров (полоса у верхней кромки поля боя) */
   private static readonly COLOR_PEN_BG = 0x1c1c28;
   /** Высота загона монстров, css-px (полоса на всю ширину поля боя) */
@@ -549,24 +545,6 @@ export class GameScene extends Phaser.Scene {
     // Depth 0 (по умолчанию): создаётся в createZoneVisuals ДО алтарей
     // (createElements) — рендерится ПОД ними, но над фоном зоны базы
     this.baseHealthFill = fill;
-
-    // Тонкая жёлтая линия максимума здоровья у ВЕРХНЕЙ кромки зоны базы.
-    // При полном HP заливка пуста, линия показывает уровень «полного» бара.
-    // Создаётся ПОСЛЕ baseHealthFill — рендерится поверх (и под алтарями).
-    // Яркая (без альфы), чтобы читаться поверх священной зелёной земли.
-    if (this.baseHealthLine) {
-      this.baseHealthLine.destroy();
-      this.baseHealthLine = null;
-    }
-    const line = this.add.rectangle(
-      this.baseZone.x + this.baseZone.width / 2,
-      this.baseZone.y,
-      this.baseZone.width,
-      2,
-      GameScene.COLOR_BASE_HEALTH_MAX,
-      1
-    );
-    this.baseHealthLine = line;
     this.updateBaseHealthFill();
   }
 
