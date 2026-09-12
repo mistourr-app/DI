@@ -1,4 +1,10 @@
-import SimplexNoise from 'simplex-noise';
+import * as simplexNoiseNS from 'simplex-noise';
+
+// v3 поставляет две сборки: ESM — default-экспорт, CJS-обёртка — именованный
+// SimplexNoise. vite и ts-jest (commonjs) резолвят по-разному — берём любой.
+const SimplexNoise: new (rng?: () => number) => {
+  noise2D(x: number, y: number): number;
+} = ((simplexNoiseNS as any).default ?? (simplexNoiseNS as any).SimplexNoise);
 
 // ============================================================
 // Seeded RNG — детерминированная генерация по строковому seed.
@@ -114,6 +120,12 @@ const SMOOTH_ITER = 2;
 const BOTTOM_FREE_RATIO = 0.1;
 // Доля площади поля, которую может занимать один связный кластер препятствий
 const MAX_CLUSTER_RATIO = 0.12;
+// Каноническое «дизайн-разрешение» поля боя (соотношение 36:65 —
+// поле боя 9:19.5 × 5/6). Частоты шума задаются относительно НЕГО,
+// а не экрана: паттерн препятствий не зависит от устройства и
+// определяется только seed + настройками генерации.
+const REF_W = 540;
+const REF_H = 975;
 
 export class LevelGenerator {
   generate(params: LevelParams): Level {
@@ -123,6 +135,22 @@ export class LevelGenerator {
     const rng = mulberry32(xmur3(seed)());
     const noise = new SimplexNoise(rng);
 
+    // Сеед-джокер шума: веса октав, сдвиги фаз и амплитуда варпа берутся
+    // из ГПСЧ — «характер» шума уникален для каждого seed, даже когда
+    // порог насыщается (высокая плотность). Диапазон весов узкий: плотность
+    // должна читаться одинаково, а не раскачиваться на ±10пп от seed к seed
+    const mix1 = 0.66 + rng() * 0.14;   // вес первой (низкочастотной) октавы
+    const mix2 = 1 - mix1;
+    const warpAmp = 0.05 + rng() * 0.05; // амплитуда домен-варпа (в долях поля)
+    // Сдвиги фаз октав и варпа (расстояние >> длины волн — октавы
+    // полностью декоррелированы и от seed к seed дают разные изгибы)
+    const offMainX = 50 + rng() * 200;
+    const offMainY = 50 + rng() * 200;
+    const offWarpA = 50 + rng() * 200;
+    const offWarpB = 50 + rng() * 200;
+    const offWarpC = 50 + rng() * 200;
+    const offWarpD = 50 + rng() * 200;
+
     const width = Math.max(200, Math.floor(params.width));
     const height = Math.max(300, Math.floor(params.height));
     const passageWidth = clamp(params.passageWidth ?? 60, 24, 200);
@@ -130,6 +158,14 @@ export class LevelGenerator {
     const blobScale = clamp(params.blobScale ?? 1, 0.1, 4);
     const bottomMargin = clamp(height * BOTTOM_FREE_RATIO, CELL * 2, height * 0.25);
     const topFree = clamp(params.topFreeHeight ?? 0, 0, height * 0.4);
+    // Масштаб «дизайн-пикселя» под устройство: и шум, и кисти прорезки
+    // нормализованы к REF. На реальных устройствах unit ≈ 1 (поле боя
+    // ограничено соотношением 9:19.5 × 5/6, ширина колеблется в пределах
+    // ~±10%) — но паттерн и ширина проходов не зависят от разрешения.
+    const unit = width / REF_W;
+    // Кисть прорезки коридоров/каньонов: passageWidth — минимальная
+    // ширина прохода (по умолчанию 60 px в «дизайн-масштабе»)
+    const brush = Math.max(passageWidth / 2, CELL * 1.25) * unit;
 
     const cols = Math.ceil(width / CELL);
     const rows = Math.ceil(height / CELL);
@@ -143,21 +179,33 @@ export class LevelGenerator {
     const exits: Exit[] = [{ x: width / 2, y: height, width: width }];
 
     // --- 2. Препятствия: органические блобы через fbm-шум ---
+    // Нормализованные координаты (wx/width, wy/height) × канонические
+    // частоты REF: паттерн препятствий НЕ зависит от разрешения экрана —
+    // тот же seed и настройки дают похожий лабиринт на любом устройстве.
     // Порог подобран так, что density=0.4 даёт ~30% заполнения.
     const threshold = 0.685 - density * 0.25;
+    // Частота домен-варпа (между частотами октав), в px-единицах референса
+    const warpFreq = 0.009;
     for (let cy = 0; cy < rows; cy++) {
       for (let cx = 0; cx < cols; cx++) {
-        const wx = cx * CELL + CELL / 2;
-        const wy = cy * CELL + CELL / 2;
+        const wx = cx * CELL;
+        const wy = cy * CELL;
         // Свободная зона только внизу: верх и бока без отступа, блобы
         // могут начинаться прямо от кромки поля
         if (wy > height - bottomMargin) continue;
+        const nx = wx / width;
+        const ny = wy / height;
+        // Домен-варп: координаты сэмплирования «кривятся» сеед-специфичным
+        // шумом — у каждого seed своя пластика структур, переживающая
+        // насыщение порога на высокой плотности
+        const warpX = nx + warpAmp * noise.noise2D(nx * (warpFreq * REF_W) + offWarpA, ny * (warpFreq * REF_H) + offWarpB);
+        const warpY = ny + warpAmp * noise.noise2D(nx * (warpFreq * REF_W) + offWarpC, ny * (warpFreq * REF_H) + offWarpD);
         // Частоты шума делятся на blobScale: множитель >1 — структуры крупнее
         const f1 = 0.0045 / blobScale;
         const f2 = 0.015 / blobScale;
-        const n1 = noise.noise2D(wx * f1, wy * f1);
-        const n2 = noise.noise2D(wx * f2 + 512.7, wy * f2 + 217.3);
-        const u = (n1 * 0.72 + n2 * 0.28 + 1) / 2;
+        const n1 = noise.noise2D(warpX * (f1 * REF_W), warpY * (f1 * REF_H));
+        const n2 = noise.noise2D(warpX * (f2 * REF_W) + offMainX, warpY * (f2 * REF_H) + offMainY);
+        const u = (n1 * mix1 + n2 * mix2 + 1) / 2;
         if (u > threshold) {
           grid[cy * cols + cx] = 1;
         }
@@ -170,17 +218,44 @@ export class LevelGenerator {
     this.openObstacles(grid, cols, rows);
     // Прямые щели-трещины между толстыми структурами закрываются
     this.sealPinchedGaps(grid, cols, rows);
-    // Кластеры больше лимита режутся извилистым каньоном (не прямой!)
-    this.splitOversizedClusters(
-      grid,
-      cols,
-      rows,
-      Math.max(passageWidth / 2, CELL * 1.25),
-      MAX_CLUSTER_RATIO
-    );
+    // Кластеры больше лимита режутся извилистым каньоном (не прямой!).
+    // При высокой плотности резка пропускается: шум почти сплошной, и
+    // детерминированные каньоны демонтируют лабиринт в «сыр» (а ещё все
+    // сиды схлопываются к одному виду). Структуру дают сеед-случайные
+    // коридоры (шаг 2.55) — они же режут гигантские кластеры.
+    if (density < 0.9) {
+      this.splitOversizedClusters(grid, cols, rows, brush, MAX_CLUSTER_RATIO);
+    }
+
+    // --- 2.55 Извилистые коридоры на высокой плотности ---
+    // При плотности выше ~0.55 свободного места мало, и лабиринт без
+    // вмешательства схлопывается в «почти сплошную скалу». Прорезаем
+    // сеть узких сеед-случайных извилистых коридоров (кисть = passageWidth,
+    // вплоть до минимальной ширины прохода): лабиринт остаётся максимально
+    // плотным, но связным и уникальным для каждого seed. Коридоры доходят
+    // до нижней свободной полосы — дренируемы по построению, поэтому
+    // заливка карманов (fillUndrained) их сохраняет.
+    const corridorCount =
+      density >= 1.5 ? 3 : density >= 0.9 ? 2 : density >= 0.55 ? 1 : 0;
+    if (corridorCount > 0) {
+      const yTo = height - bottomMargin;
+      // Стратифицированная раскладка: по одному коридору на полосу ширины —
+      // стартовые X гарантированно разнесены, лабиринты разных сидов не
+      // могут совпасть коридорами (иначе при насыщенном шуме сиды почти
+      // неотличимы)
+      const band = width / corridorCount;
+      for (let k = 0; k < corridorCount; k++) {
+        const x0 = (k + 0.15 + rng() * 0.7) * band;
+        const amp = 24 + rng() * 44;
+        this.carveWindingV(grid, cols, rows, brush, x0, 0, yTo, amp);
+      }
+    }
 
     // --- 3. Гарантия 100% проходимости от входа к выходу ---
-    this.ensurePassability(grid, cols, rows, width, height, bottomMargin, passageWidth);
+    // Цель гарантийного коридора — сеед-случайная (не фиксированный центр):
+    // положение основного прохода уникально для каждого seed
+    const passTargetX = (0.2 + rng() * 0.6) * width;
+    this.ensurePassability(grid, cols, rows, height, bottomMargin, brush, passTargetX);
 
     // --- 3.5 Заливка недренируемых карманов ---
     // Движение монстров строго вниз: любая «яма» без пути вниз/вбок к
@@ -190,7 +265,7 @@ export class LevelGenerator {
     // --- 3.6 Гарантия открытых входов сверху ---
     // Заливка могла запечатать весь верхний ряд (полости под входами).
     // Тогда монстрам некуда входить — пробиваем сквозные дренажные шахты.
-    this.ensureTopEntrances(grid, cols, rows, height, bottomMargin, passageWidth);
+    this.ensureTopEntrances(grid, cols, rows, height, bottomMargin, brush);
 
     // --- 3.7 Свободная полоса сверху (загон монстров) ---
     // Верх полосы загона свободен от препятствий: монстры выходят из загона
@@ -269,13 +344,12 @@ export class LevelGenerator {
     grid: Uint8Array,
     cols: number,
     rows: number,
-    width: number,
     height: number,
     bottomMargin: number,
-    passageWidth: number
+    brush: number,
+    tx: number
   ): void {
     const botRows = Math.min(rows - 1, Math.ceil(bottomMargin / CELL));
-    const brush = Math.max(passageWidth / 2, CELL * 1.25);
 
     // Страховка: если шум закрыл ВЕСЬ верхний ряд сплошняком, входа
     // сверху не будет вовсе — освобождаем центральные клетки ряда
@@ -344,8 +418,7 @@ export class LevelGenerator {
       }
 
       if (!reachable) {
-        // Ближайшая достигнутая клетка к середине нижней полосы
-        const tx = width / 2;
+        // Ближайшая достигнутая клетка к сеед-случайной цели у нижней полосы
         const ty = height - bottomMargin * 0.5;
         let bestI = -1;
         let bestD = Infinity;
@@ -605,7 +678,7 @@ export class LevelGenerator {
     rows: number,
     height: number,
     bottomMargin: number,
-    passageWidth: number
+    brush: number
   ): void {
     let open = false;
     for (let cx = 0; cx < cols; cx++) {
@@ -616,7 +689,6 @@ export class LevelGenerator {
     }
     if (open) return;
 
-    const brush = Math.max(passageWidth / 2, CELL * 1.25);
     const shafts = Math.max(2, Math.floor((cols * CELL) / 240));
     const ty = height - bottomMargin * 0.5;
     for (let k = 0; k < shafts; k++) {
