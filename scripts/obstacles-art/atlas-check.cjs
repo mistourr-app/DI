@@ -9,7 +9,8 @@
 //   - УГЛЫ:  2×2 блока у диагональных контактов обязаны быть заполнены.
 //
 // Требует собранную игру (npm run build) — читает текстуру через preview.
-// Запуск: node scripts/obstacles-art/atlas-check.cjs
+// Запуск: node scripts/obstacles-art/atlas-check.cjs [--inferno]
+// (--inferno проверяет огненный атлас 'obstacle-blob-inferno')
 // ============================================================
 
 const { spawn } = require('child_process');
@@ -17,6 +18,7 @@ const puppeteer = require('puppeteer');
 
 const ROOT = require('path').resolve(__dirname, '../..');
 const PORT = 4199;
+const TEX_KEY = process.argv.includes('--inferno') ? 'obstacle-blob-inferno' : 'obstacle-blob';
 
 const B_N = 1, B_NE = 2, B_E = 4, B_SE = 8, B_S = 16, B_SW = 32, B_W = 64, B_NW = 128;
 
@@ -55,9 +57,9 @@ function shiftLeftUp(mask) { return (mask & B_N ? B_E : 0) | (mask & B_NW ? B_N 
   await page.goto(`http://localhost:${PORT}`, { waitUntil: 'networkidle2', timeout: 60000 });
   await page.waitForFunction('window.__di && window.__di.obstacleSprites', { timeout: 30000 });
 
-  const frames = await page.evaluate(() => {
+  const frames = await page.evaluate((texKey) => {
     const sc = window.__di;
-    const src = sc.textures.get('obstacle-blob').getSourceImage();
+    const src = sc.textures.get(texKey).getSourceImage();
     const c = document.createElement('canvas');
     c.width = src.width; c.height = src.height;
     const ctx = c.getContext('2d');
@@ -68,7 +70,7 @@ function shiftLeftUp(mask) { return (mask & B_N ? B_E : 0) | (mask & B_NW ? B_N 
       out.push(ctx.getImageData(col * 16, row * 16, 16, 16).data);
     }
     return out;
-  });
+  }, TEX_KEY);
 
   const opaque = (d, x, y) => d[(y * 16 + x) * 4 + 3] > 40;
   const same = (d1, x1, y1, d2, x2, y2) => {

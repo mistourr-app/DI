@@ -106,6 +106,15 @@ export class GodPowerIcon {
     this.refreshState();
   }
 
+  /** Глубина иконки: применяется ко всем частям, подписи и зоне тапа */
+  setDepth(depth: number): void {
+    this.zone.setDepth(depth);
+    this.label.setDepth(depth);
+    for (const p of this.parts) {
+      (p as any).setDepth(depth);
+    }
+  }
+
   destroy(): void {
     this.stopFlashes();
     this.stopPulses();

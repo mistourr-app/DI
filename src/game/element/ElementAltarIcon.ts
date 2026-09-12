@@ -91,6 +91,14 @@ export class ElementAltarIcon {
     this.refreshState();
   }
 
+  /** Глубина иконки: применяется ко всем частям и зоне тапа */
+  setDepth(depth: number): void {
+    this.zone.setDepth(depth);
+    for (const p of this.parts) {
+      (p as any).setDepth(depth);
+    }
+  }
+
   destroy(): void {
     this.stopPulses();
     this.scene.tweens.killTweensOf(this.parts);

@@ -9,8 +9,9 @@
 // Никаких проверок соответствия шаблону — ответственность
 // за раскладку на художнике.
 //
-// Запуск: node build-atlas.cjs <путь-к-png>
-// (обычно — перетаскиванием файла на build_atlas.bat)
+// Запуск: node build-atlas.cjs <путь-к-png> [выходной-файл]
+// (обычно — перетаскиванием файла на build_atlas.bat;
+// инферно-шит — на build_atlas_inferno.bat)
 // ============================================================
 
 const fs = require('fs');
@@ -178,6 +179,9 @@ if (!FILE) {
   console.error('Нет файла: перетащи PNG на build_atlas.bat');
   process.exit(1);
 }
+// Выходной файл: по умолчанию обычный атлас, либо явно указанный
+// (инферно — через build_atlas_inferno.bat)
+const OUT_PATH = process.argv[3] ? path.resolve(process.argv[3]) : OUT;
 
 let sheet;
 try {
@@ -215,6 +219,6 @@ for (let f = 0; f < 47; f++) {
   }
 }
 
-fs.writeFileSync(OUT, encodePNG(128, 128, out));
-console.log('Готово:', OUT);
+fs.writeFileSync(OUT_PATH, encodePNG(128, 128, out));
+console.log('Готово:', OUT_PATH);
 console.log(`Тайлов использовано: ${CELL_TO_FRAME.filter((v, i) => CELL_TO_FRAME.indexOf(v) === i).length} из 47`);

@@ -37,6 +37,7 @@ import {
 } from './blobTiles';
 
 export const OBSTACLE_ATLAS_KEY = 'obstacle-blob';
+export const OBSTACLE_INFERNO_ATLAS_KEY = 'obstacle-blob-inferno';
 
 const TILE = 16; // размер ячейки, px
 const R = TILE / 2; // радиус дисков
@@ -47,14 +48,28 @@ const ATLAS_SIZE = 128;
 const SS = 4;
 const TILE_SS = TILE * SS;
 
-// Палитра (RGB)
-const BASE: [number, number, number] = [107, 91, 67]; // #6B5B43
-const RIM: [number, number, number] = [168, 192, 122]; // #A8C07A
-const SHADOW: [number, number, number] = [74, 61, 46]; // #4A3D2E
-const SPECKLE_DARK: [number, number, number] = [83, 63, 47];
-const SPECKLE_LIGHT: [number, number, number] = [138, 115, 83]; // #8A7353
-const GRASS_DARK: [number, number, number] = [125, 155, 84]; // #7D9B54
-const GRASS_LIGHT: [number, number, number] = [148, 178, 106]; // #94B26A
+/** Палитра атласа (RGB). Геометрия кадров одинаковая — отличается только цвет. */
+export interface BlobPalette {
+  base: [number, number, number];
+  rim: [number, number, number];
+  shadow: [number, number, number];
+  speckleDark: [number, number, number];
+  speckleLight: [number, number, number];
+  grassDark: [number, number, number];
+  grassLight: [number, number, number];
+}
+
+// Палитра «Земля/трава»: база #6B5B43, рим-свет #A8C07A (верх/лево),
+// тень #4A3D2E (низ/право), вкрапления-камешки и травинки.
+export const EARTH_PALETTE: BlobPalette = {
+  base: [107, 91, 67], // #6B5B43
+  rim: [168, 192, 122], // #A8C07A
+  shadow: [74, 61, 46], // #4A3D2E
+  speckleDark: [83, 63, 47],
+  speckleLight: [138, 115, 83], // #8A7353
+  grassDark: [125, 155, 84], // #7D9B54
+  grassLight: [148, 178, 106] // #94B26A
+};
 
 const SALT = 0x0b10b;
 
@@ -94,7 +109,8 @@ function insideShape(x: number, y: number, mask: number): boolean {
  * Рисует один тайл с суперсэмплом SS: заливка + бевел (рим-свет сверху/слева,
  * тень снизу/справа по силуэту) + детерминированные вкрапления.
  */
-function renderTile(mask: number, frame: number): HTMLCanvasElement {
+function renderTile(mask: number, frame: number, palette: BlobPalette): HTMLCanvasElement {
+  const { base: BASE, rim: RIM, shadow: SHADOW, speckleDark: SPECKLE_DARK, speckleLight: SPECKLE_LIGHT, grassDark: GRASS_DARK, grassLight: GRASS_LIGHT } = palette;
   const cv = document.createElement('canvas');
   cv.width = TILE_SS;
   cv.height = TILE_SS;
@@ -233,9 +249,15 @@ function renderTile(mask: number, frame: number): HTMLCanvasElement {
 /**
  * Создаёт (один раз на сцену) атлас блоб-тайлов и возвращает его ключ.
  * 128×128, 47 кадров 16×16, раскладка 8×6 (маски по возрастанию).
+ * Если текстура с ключом уже зарегистрирована (ручной PNG художника из
+ * preload) — процедурная генерация пропускается, ключ возвращается как есть.
  */
-export function ensureObstacleAtlas(scene: Phaser.Scene): string {
-  if (scene.textures.exists(OBSTACLE_ATLAS_KEY)) return OBSTACLE_ATLAS_KEY;
+export function ensureObstacleAtlas(
+  scene: Phaser.Scene,
+  key: string = OBSTACLE_ATLAS_KEY,
+  palette: BlobPalette = EARTH_PALETTE
+): string {
+  if (scene.textures.exists(key)) return key;
   const canvas = document.createElement('canvas');
   canvas.width = ATLAS_SIZE;
   canvas.height = ATLAS_SIZE;
@@ -244,20 +266,30 @@ export function ensureObstacleAtlas(scene: Phaser.Scene): string {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     for (let f = 0; f < CANONICAL_MASKS.length; f++) {
-      const tile = renderTile(CANONICAL_MASKS[f], f);
+      const tile = renderTile(CANONICAL_MASKS[f], f, palette);
       const col = f % ATLAS_COLS;
       const row = Math.floor(f / ATLAS_COLS);
       ctx.drawImage(tile, 0, 0, TILE_SS, TILE_SS, col * TILE, row * TILE, TILE, TILE);
     }
   }
-  scene.textures.addCanvas(OBSTACLE_ATLAS_KEY, canvas);
+  scene.textures.addCanvas(key, canvas);
   // Кадры 16×16 в раскладке 8×6 (маски по возрастанию). Фреймы регистрируем
   // вручную через Texture.add — addSpriteSheet не принимает canvas по типам.
-  const tex = scene.textures.get(OBSTACLE_ATLAS_KEY);
+  const tex = scene.textures.get(key);
   for (let f = 0; f < CANONICAL_MASKS.length; f++) {
     const col = f % ATLAS_COLS;
     const row = Math.floor(f / ATLAS_COLS);
     tex.add(f, 0, col * TILE, row * TILE, TILE, TILE);
   }
-  return OBSTACLE_ATLAS_KEY;
+  return key;
+}
+
+/**
+ * Огненный атлас для поджога блобов фронтом инферно. Используется ТОЛЬКО
+ * ручной шит художника (obstacles_blob_inferno.png из preload). Временный
+ * процедурный фолбэк убран: если шита нет — возвращается null, и блобы
+ * просто не поджигаются (никакой «временной закраски»).
+ */
+export function ensureObstacleInfernoAtlas(scene: Phaser.Scene): string | null {
+  return scene.textures.exists(OBSTACLE_INFERNO_ATLAS_KEY) ? OBSTACLE_INFERNO_ATLAS_KEY : null;
 }

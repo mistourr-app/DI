@@ -14,6 +14,7 @@ import { ElementEffectSystem } from '../game/element/ElementEffectSystem';
 import { TuningStore, type TuningSnapshot } from '../game/save/TuningStore';
 import monsterBaseUrl from '../assets/monster_base.png';
 import obstaclesBlobUrl from '../assets/obstacles_blob.png';
+import obstaclesBlobInfernoUrl from '../assets/obstacles_blob_inferno.png';
 import groundBaseUrl from '../assets/ground_base.png';
 import groundInfernoUrl from '../assets/ground_inferno.png';
 import groundInfernoFadeUrl from '../assets/ground_inferno_fade.png';
@@ -21,7 +22,7 @@ import groundHolyUrl from '../assets/ground_holy.png';
 import groundHolyFadeUrl from '../assets/ground_holy_fade.png';
 import { StateOverlayPool } from '../game/visuals/stateOverlay';
 import { frameIndexForCell } from '../game/visuals/blobTiles';
-import { ensureObstacleAtlas } from '../game/visuals/blobAtlas';
+import { ensureObstacleAtlas, ensureObstacleInfernoAtlas } from '../game/visuals/blobAtlas';
 
 // Радиус круга в текстуре монстра — для масштабирования (32×32 px)
 const ENEMY_TEX_RADIUS = 16;
@@ -38,13 +39,29 @@ const AIR_DAMP = 0.97;
 const MIN_DRIFT_SQ = 0.0025;
 // Глубина фоновых текстур зон (загон/поле/база): над фоном (0), под препятствиями (600)
 const GROUND_DEPTH = 100;
-// Fade-ряды перекрывают ground_base на ±1 тайл, чтобы смешать переход
-const FADE_DEPTH = 108;
-// Вспышки попаданий/укусов: выше фоновых тайлов (100/108), ниже
+// Fade-ряды перекрывают ground_base на ±1 тайл, чтобы смешать переход.
+// Inferno-fade ВЫШЕ holy-fade: фронт инферно визуально «съедает» переход
+// к святой земле. Оба фэйда НИЖЕ ground_holy (HOLY_GROUND_DEPTH) — fade,
+// сползающий в зону базы, прячется под святую землю (чисто декорация).
+const HOLY_FADE_DEPTH = 106;
+// Тело инферно: ВЫШЕ holy-fade — при подходе фронт перекрывает полосу
+// перехода к святой земле (иначе holy-fade закрашивает инферно у кромки),
+// НО ниже inferno-fade (108) — стык фронта не ломается
+const INFERNO_BODY_DEPTH = 107;
+const INFERNO_FADE_DEPTH = 108;
+// Святая земля зоны базы: выше обоих фэдов, ниже вспышек (300) и UI
+const HOLY_GROUND_DEPTH = 110;
+// Иконки базы (алтари, сила бога, подписи): выше святой земли, ниже монстров (850)
+const BASE_UI_DEPTH = 120;
+// Вспышки попаданий/укусов: выше фоновых тайлов (100/108/110), ниже
 // препятствий (600) — не обрезаются верхней кромкой зоны базы
 const HIT_EFFECT_DEPTH = 300;
 // Препятствия: блоб-тайлы под землёй (700) и штрихами (800), над фоном (0)
 const OBSTACLE_DEPTH = 600;
+// Запас запечённого огненного слоя под полукадр 16px тайла (клетки у кромок)
+const FIRE_LAYER_MARGIN = 8;
+// Размер тайла градиентной маски (размытие кромки фронта), px
+const FEATHER_TILE = 16;
 
 export class GameScene extends Phaser.Scene {
   private enemies!: Phaser.GameObjects.Group;
@@ -65,8 +82,13 @@ export class GameScene extends Phaser.Scene {
   private infernoFadeTile: Phaser.GameObjects.TileSprite | null = null;
   /** Fade-переход поля в базу (ground-holy-fade), ряд над зоной базы */
   private holyFadeTile: Phaser.GameObjects.TileSprite | null = null;
-  /** Текстура зоны базы (ground-holy), создаётся ДО baseHealthFill (он поверх) */
+  /** Текстура зоны базы (ground-holy) */
   private holyTile: Phaser.GameObjects.TileSprite | null = null;
+  /**
+   * Тело инферно: ground-inferno, растёт вниз от низа загона по мере
+   * потери HP базы. Когда фронт достигает базы — игра проиграна.
+   */
+  private infernoBodyTile: Phaser.GameObjects.TileSprite | null = null;
   
   // Настройки спавна врагов
   private currentLevel: number = 1;          // Текущий уровень (1..MAX_LEVEL)
@@ -132,8 +154,21 @@ export class GameScene extends Phaser.Scene {
   /** Атакующие землю в этом кадре: позиции, батчатся в один укус в update() */
   private pendingBites: Array<{ x: number; y: number }> = [];
   private pendingBiteCount = 0;
-  /** Индикатор здоровья базы: заливка зоны базы цветом снизу вверх (0 HP = полная) */
-  private baseHealthFill: Phaser.GameObjects.Rectangle | null = null;
+  /**
+   * Огненный слой блобов: ОДИН запечённый спрайт всего лабиринта в огненной
+   * палитре (canvas рисуется при генерации уровня). Поверх обычных блобов,
+   * вскрывается масками «выше линии фронта»: жёсткой (основной) + узкой
+   * градиентной полосой у фронта (размытая кромка). Два замаскированных
+   * спрайта вместо тысячи — маска не бьёт по FPS.
+   */
+  private infernoFireLayer: Phaser.GameObjects.Image | null = null;
+  /** Спрайт-носитель жёсткой маски (не в display list, только геометрия) */
+  private infernoMaskSprite: Phaser.GameObjects.Image | null = null;
+  /** Градиентный слой-полоса у фронта (размытие кромки) и его маска */
+  private infernoFeatherLayer: Phaser.GameObjects.Image | null = null;
+  private infernoFeatherMaskSprite: Phaser.GameObjects.Image | null = null;
+  /** Высота размытой кромки фронта, px */
+  private static readonly INFERNO_FEATHER = 24;
   /** Загон монстров: спрайты очереди у верхней кромки (оставшиеся), не в бою */
   private penSprites: Phaser.GameObjects.Image[] = [];
 
@@ -142,8 +177,6 @@ export class GameScene extends Phaser.Scene {
   private static readonly BASE_RATIO = 1 / 6;
   private static readonly COLOR_BATTLEFIELD_BG = 0x0a0a1a;
   private static readonly COLOR_BASE_BG = 0x0a1a0a;
-  /** Цвет индикатора здоровья базы: заливка зоны базы снизу вверх (0 HP = полная) */
-  private static readonly COLOR_BASE_HEALTH = 0xb70000;
   /** Цвет фона загона монстров (полоса у верхней кромки поля боя) */
   private static readonly COLOR_PEN_BG = 0x1c1c28;
   /** Высота загона монстров, css-px (полоса на всю ширину поля боя) */
@@ -171,6 +204,12 @@ export class GameScene extends Phaser.Scene {
     // Блоб-тайлсет препятствий художника: 47 кадров 16×16, 8×6.
     // Если файла нет — процедурный атлас (ensureObstacleAtlas) как фолбэк.
     this.load.spritesheet('obstacle-blob', obstaclesBlobUrl, {
+      frameWidth: 16,
+      frameHeight: 16
+    });
+    // Огненный блоб-тайлсет (поджог фронтом инферно): тот же формат,
+    // фолбэк — процедурный огненный атлас (ensureObstacleInfernoAtlas).
+    this.load.spritesheet('obstacle-blob-inferno', obstaclesBlobInfernoUrl, {
       frameWidth: 16,
       frameHeight: 16
     });
@@ -448,6 +487,7 @@ export class GameScene extends Phaser.Scene {
     // Глубина: над фоном (0), fade (108) выше земли (100), под
     // препятствиями (600), землёй-барьером (700), штрихами (800) и монстрами (850).
     if (this.penTile) { this.penTile.destroy(); this.penTile = null; }
+    if (this.infernoBodyTile) { this.infernoBodyTile.destroy(); this.infernoBodyTile = null; }
     if (this.infernoFadeTile) { this.infernoFadeTile.destroy(); this.infernoFadeTile = null; }
     if (this.groundTile) { this.groundTile.destroy(); this.groundTile = null; }
     if (this.holyFadeTile) { this.holyFadeTile.destroy(); this.holyFadeTile = null; }
@@ -476,8 +516,23 @@ export class GameScene extends Phaser.Scene {
       this.groundTile.setDepth(GROUND_DEPTH);
     }
 
+    // Тело инферно: растёт вниз от низа загона по мере потери HP базы.
+    // Origin (0.5, 0) — анкер на низ загона, высота меняется через setSize
+    // (текстура тайлится, не растягивается). Создаётся ПОСЛЕ groundTile —
+    // рендерится поверх него; выше holy-fade (см. INFERNO_BODY_DEPTH).
+    this.infernoBodyTile = this.add.tileSprite(
+      z.x + z.width / 2,
+      z.y + penH,
+      z.width,
+      0,
+      'ground-inferno'
+    );
+    this.infernoBodyTile.setOrigin(0.5, 0);
+    this.infernoBodyTile.setDepth(INFERNO_BODY_DEPTH);
+
     // Fade загона: ряд ПОВЕРХ земли у верхней границы загона (топ непрозрачен —
     // примыкает к «инферно» загона, к низу прозрачен и показывает землю).
+    // С продвижением фронта едет вниз вместе с телом инферно (updateInfernoProgress)
     this.infernoFadeTile = this.add.tileSprite(
       z.x + z.width / 2,
       z.y + penH + fadeH / 2,
@@ -485,7 +540,7 @@ export class GameScene extends Phaser.Scene {
       fadeH,
       'ground-inferno-fade'
     );
-    this.infernoFadeTile.setDepth(FADE_DEPTH);
+    this.infernoFadeTile.setDepth(INFERNO_FADE_DEPTH);
 
     // Fade базы: ряд ПОВЕРХ земли у нижней границы поля боя (топ прозрачен —
     // видна земля, к низу плотен и примыкает к «святой» земле базы).
@@ -496,11 +551,11 @@ export class GameScene extends Phaser.Scene {
       fadeH,
       'ground-holy-fade'
     );
-    this.holyFadeTile.setDepth(FADE_DEPTH);
+    this.holyFadeTile.setDepth(HOLY_FADE_DEPTH);
 
     // 4. Зона базы. Плоская заливка — фолбэк; поверх ляжет текстура
-    // ground-holy (создаётся ниже, ПОСЛЕ zoneGraphics, но ДО baseHealthFill —
-    // заливка здоровья и алтари рендерятся поверх текстуры).
+    // ground-holy (создаётся ниже, ПОСЛЕ zoneGraphics; алтари рендерятся
+    // поверх текстуры).
     g.fillStyle(GameScene.COLOR_BASE_BG, 1);
     g.fillRect(
       this.baseZone.x,
@@ -512,8 +567,7 @@ export class GameScene extends Phaser.Scene {
     this.zoneGraphics = g;
 
     // Зона базы: святая земля. Depth 0 (по умолчанию), создаётся сразу после
-    // zoneGraphics и ПЕРЕД baseHealthFill: фон базы ниже заливки здоровья,
-    // которая в свою очередь ниже алтарей (createElements).
+    // zoneGraphics и ПЕРЕД алтарями (createElements): фон базы ниже алтарей.
     // Overshoot +2px по высоте: на точной границе (roundPixels) WebGL
     // оставляет 1px-полосу фолбэк-заливки у нижнего края экрана.
     // Origin (0,0): не вылезает за игровую область по бокам.
@@ -524,35 +578,61 @@ export class GameScene extends Phaser.Scene {
       this.baseZone.height + 2,
       'ground-holy'
     ).setOrigin(0, 0);
+    // Выше обоих фэдов: inferno-fade, сползающий в зону базы, прячется
+    // под святую землю (игра проиграна ровно в момент контакта)
+    this.holyTile.setDepth(HOLY_GROUND_DEPTH);
 
-    // Индикатор здоровья базы: заливка зоны базы цветом B70000 СНИЗУ ВВЕРХ.
-    // Высота = доля потерянного здоровья (1 - HP/MAX): полная заливка = HP 0.
-    // Прямоугольник фиксирован по размеру, высота — через scaleY (без
-    // пересоздания геометрии каждый кадр). Ниже монстров (850) и UI.
-    if (this.baseHealthFill) {
-      this.baseHealthFill.destroy();
-      this.baseHealthFill = null;
-    }
-    const fill = this.add.rectangle(
-      this.baseZone.x + this.baseZone.width / 2,
-      this.baseZone.y + this.baseZone.height,
-      this.baseZone.width,
-      this.baseZone.height,
-      GameScene.COLOR_BASE_HEALTH,
-      0.5
-    );
-    fill.setOrigin(0.5, 1);
-    // Depth 0 (по умолчанию): создаётся в createZoneVisuals ДО алтарей
-    // (createElements) — рендерится ПОД ними, но над фоном зоны базы
-    this.baseHealthFill = fill;
-    this.updateBaseHealthFill();
+    this.updateInfernoProgress();
   }
 
-  /** Перерисовать заливку индикатора здоровья базы (событийно) */
-  private updateBaseHealthFill(): void {
-    if (!this.baseHealthFill) return;
-    const frac = 1 - this.baseHealth / Math.max(1, this.baseMaxHealth);
-    this.baseHealthFill.setScale(1, Phaser.Math.Clamp(frac, 0, 1));
+  /**
+   * Продвижение инферно по потере HP базы: тело ground-inferno растёт вниз
+   * от низа загона, fade едет за фронтом. При 0 HP фронт касается базы —
+   * игра проиграна (см. handleEnemyReachedBase). Огненный слой блобов
+   * вскрывается маской: белый прямоугольник ВЫШЕ линии фронта опускается
+   * вместе с инферно — граница перекраса непрерывная, без рывков по рядам.
+   */
+  private updateInfernoProgress(): void {
+    const z = this.battlefieldZone;
+    const penH = GameScene.PEN_HEIGHT * UI_SCALE;
+    const fieldH = z.height - penH;
+    const frac = Phaser.Math.Clamp(1 - this.baseHealth / Math.max(1, this.baseMaxHealth), 0, 1);
+    const bodyH = frac * fieldH;
+    const frontY = z.y + penH + bodyH;
+
+    // Тело инферно: высота через setSize — текстура тайлится, не растягивается
+    if (this.infernoBodyTile) {
+      this.infernoBodyTile.setSize(z.width, bodyH);
+      this.infernoBodyTile.setPosition(z.x + z.width / 2, z.y + penH);
+    }
+
+    // Fade едет за фронтом без ограничений: в самом конце спуска он заходит
+    // в зону базы и прячется под ground_holy (HOLY_GROUND_DEPTH > INFERNO_FADE_DEPTH).
+    // Фэйд — чисто декорация: проигрыш наступает по контакту ТЕЛА с базой.
+    if (this.infernoFadeTile) {
+      const fadeH = GameScene.FADE_H;
+      this.infernoFadeTile.setPosition(z.x + z.width / 2, frontY + fadeH / 2);
+    }
+
+    // Маски огненного слоя: origin (0.5, 1), низ = линия фронта.
+    // 1) Жёсткая: вся область выше (фронт − INFERNO_FEATHER), __WHITE 1×1 →
+    //    scale = размер в px.
+    // 2) Градиентная полоса: размытая кромка высотой INFERNO_FEATHER —
+    //    текстура-градиент масштабируется 1:1 по высоте (альфа 1 → 0),
+    //    поэтому ширина размытия постоянна при любом положении фронта.
+    // Два замаскированных спрайта — O(1) на вызов.
+    const feather = GameScene.INFERNO_FEATHER;
+    if (this.infernoMaskSprite) {
+      this.infernoMaskSprite.setPosition(z.x + z.width / 2, frontY - feather);
+      this.infernoMaskSprite.setScale(
+        z.width + FIRE_LAYER_MARGIN * 2,
+        Math.max(0, frontY - feather - (z.y - FIRE_LAYER_MARGIN))
+      );
+    }
+    if (this.infernoFeatherMaskSprite) {
+      this.infernoFeatherMaskSprite.setPosition(z.x + z.width / 2, frontY);
+      this.infernoFeatherMaskSprite.setScale(z.width + FIRE_LAYER_MARGIN * 2, feather / FEATHER_TILE);
+    }
   }
   
   private createBase(): void {
@@ -599,6 +679,8 @@ export class GameScene extends Phaser.Scene {
       this.godPower,
       () => { this.toggleSuperMode(); }
     );
+    // Иконки базы выше святой земли (HOLY_GROUND_DEPTH=110), ниже монстров (850)
+    this.godIcon.setDepth(BASE_UI_DEPTH);
 
     // Пересоздаём алтари (при resize) — старые иконки уничтожаются
     this.altars.forEach(a => a.destroy());
@@ -616,6 +698,7 @@ export class GameScene extends Phaser.Scene {
         align: 'center'
       });
       nameLabel.setOrigin(0.5);
+      nameLabel.setDepth(BASE_UI_DEPTH);
 
       // Алтарь: круг, заливка маны цветом стихии снизу вверх (как у силы бога)
       const altar = new ElementAltarIcon(this, elementX, elementY, elementRadius, {
@@ -636,6 +719,7 @@ export class GameScene extends Phaser.Scene {
       });
 
       this.altars.set(element.key, altar);
+      altar.setDepth(BASE_UI_DEPTH);
     });
 
     this.refreshAltarBars();
@@ -1014,10 +1098,29 @@ export class GameScene extends Phaser.Scene {
       this.obstacleSprites.destroy(true);
       this.obstacleSprites = null;
     }
+    if (this.infernoFireLayer) {
+      this.infernoFireLayer.destroy();
+      this.infernoFireLayer = null;
+    }
+    if (this.infernoFeatherLayer) {
+      this.infernoFeatherLayer.destroy();
+      this.infernoFeatherLayer = null;
+    }
+    if (this.infernoMaskSprite) {
+      this.infernoMaskSprite.destroy();
+      this.infernoMaskSprite = null;
+    }
+    if (this.infernoFeatherMaskSprite) {
+      this.infernoFeatherMaskSprite.destroy();
+      this.infernoFeatherMaskSprite = null;
+    }
     const cf = this.level.getCollisionField();
     const key = ensureObstacleAtlas(this);
-    const ox = this.battlefieldZone.x;
-    const oy = this.battlefieldZone.y;
+    // Огненный слой — только если ручной шит художника загружен
+    const fireKey = ensureObstacleInfernoAtlas(this);
+    const z = this.battlefieldZone;
+    const ox = z.x;
+    const oy = z.y;
     const half = cf.cellSize / 2;
 
     // Блоб-тайлы: по спрайту на занятую клетку, кадр по 8 соседям.
@@ -1039,7 +1142,99 @@ export class GameScene extends Phaser.Scene {
         group.add(s);
       }
     }
+
+    // Огненный слой: весь лабиринт в огненной палитре запекается в ОДИН
+    // canvas (как рисуются спрайты: кадр 16×16 по центру клетки). Два
+    // спрайта одного запечённого слоя + две Bitmap-маски «выше линии
+    // фронта» (жёсткая + градиентная полоса размытия) — перекрас плавный
+    // и непрерывный, стоимость маски не зависит от числа блобов.
+    if (fireKey) {
+      const margin = FIRE_LAYER_MARGIN; // полукадр 16px: клетки у кромок не обрезаются
+      const cw = Math.ceil(z.width) + margin * 2;
+      const ch = Math.ceil(z.height) + margin * 2;
+      const cv = document.createElement('canvas');
+      cv.width = cw;
+      cv.height = ch;
+      const ctx = cv.getContext('2d');
+      const src = this.textures.get(fireKey).getSourceImage() as HTMLImageElement;
+      if (ctx) {
+      // Холст уже смещён на margin (origin спрайта = z.x - margin): кадр
+      // рисуем в мировых координатах клетки минус origin — без повторного
+      // вычитания margin, иначе слой съезжает на полтайла влево/вверх.
+      for (let cy = 0; cy < cf.rows; cy++) {
+        const row = cy * cf.cols;
+        for (let cx = 0; cx < cf.cols; cx++) {
+          if (blocked[row + cx] !== 1) continue;
+          const frame = frameIndexForCell(blocked, cf.cols, cf.rows, cx, cy);
+          const fx = (frame % 8) * 16;
+          const fy = Math.floor(frame / 8) * 16;
+          ctx.drawImage(
+            src, fx, fy, 16, 16,
+            cx * cf.cellSize + half,
+            cy * cf.cellSize + half,
+            16, 16
+          );
+        }
+      }
+      }
+      const layerKey = 'obstacle-fire-layer';
+      if (this.textures.exists(layerKey)) this.textures.removeKey(layerKey);
+      this.textures.addCanvas(layerKey, cv);
+      const fireImg = this.add.image(z.x - margin, z.y - margin, layerKey).setOrigin(0, 0);
+      fireImg.setDepth(OBSTACLE_DEPTH);
+
+      // Жёсткая маска: белый прямоугольник ВЫШЕ линии фронта (origin (0.5,1),
+      // низ = фронт − INFERNO_FEATHER). Спрайт-носитель не в display list.
+      const maskSprite = this.make.image({
+        x: z.x + z.width / 2,
+        y: oy + GameScene.PEN_HEIGHT * UI_SCALE,
+        key: '__WHITE',
+        add: false
+      });
+      maskSprite.setOrigin(0.5, 1);
+      const mask = new Phaser.Display.Masks.BitmapMask(this, maskSprite);
+      fireImg.setMask(mask);
+      this.infernoFireLayer = fireImg;
+      this.infernoMaskSprite = maskSprite;
+
+      // Градиентная маска размытия: текстура 16×16 с альфой 1→0 сверху вниз.
+      // Спрайт-носитель масштабируется 1:1 по высоте (FEATHER px) — ширина
+      // размытой кромки постоянна при любом положении фронта.
+      const featherKey = 'inferno-feather-mask';
+      if (!this.textures.exists(featherKey)) {
+        const fc = document.createElement('canvas');
+        fc.width = FEATHER_TILE;
+        fc.height = FEATHER_TILE;
+        const fctx = fc.getContext('2d');
+        if (fctx) {
+          const g = fctx.createLinearGradient(0, 0, 0, FEATHER_TILE);
+          g.addColorStop(0, 'rgba(255,255,255,1)');
+          g.addColorStop(1, 'rgba(255,255,255,0)');
+          fctx.fillStyle = g;
+          fctx.fillRect(0, 0, FEATHER_TILE, FEATHER_TILE);
+        }
+        this.textures.addCanvas(featherKey, fc);
+      }
+      // Второй спрайт того же запечённого слоя — только в полосе размытия
+      const featherImg = this.add.image(z.x - margin, z.y - margin, layerKey).setOrigin(0, 0);
+      featherImg.setDepth(OBSTACLE_DEPTH);
+      const featherMaskSprite = this.make.image({
+        x: z.x + z.width / 2,
+        y: oy + GameScene.PEN_HEIGHT * UI_SCALE,
+        key: featherKey,
+        add: false
+      });
+      featherMaskSprite.setOrigin(0.5, 1);
+      const featherMask = new Phaser.Display.Masks.BitmapMask(this, featherMaskSprite);
+      featherImg.setMask(featherMask);
+      this.infernoFeatherLayer = featherImg;
+      this.infernoFeatherMaskSprite = featherMaskSprite;
+    }
+
     this.obstacleSprites = group;
+    // Стартовое положение фронта (актуально для старта уровня с уже
+    // потерянным HP): маски встают на текущую линию инферно
+    this.updateInfernoProgress();
   }
 
   /** Коллизия в мировых координатах: переводим в локальные поля боя */
@@ -1385,7 +1580,7 @@ export class GameScene extends Phaser.Scene {
 
     // Уменьшаем здоровье базы
     this.baseHealth = Math.max(0, this.baseHealth - 1);
-    this.updateBaseHealthFill();
+    this.updateInfernoProgress();
 
     // Возвращаем врага в пул вместо уничтожения (нет нагрузки на GC)
     this.releaseOverlay(enemy);
@@ -2083,7 +2278,8 @@ export class GameScene extends Phaser.Scene {
     if (restoreHealth) {
       this.baseHealth = this.baseMaxHealth;
     }
-    this.updateBaseHealthFill();
+    // Маска огненного слоя встаёт на текущую линию фронта (0 HP => полный перекрас)
+    this.updateInfernoProgress();
     // Заряд силы бога не переносится на новый уровень
     this.godPower.reset();
     this.godIcon?.redraw();
