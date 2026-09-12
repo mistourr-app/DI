@@ -154,7 +154,7 @@ export class LevelGenerator {
     const width = Math.max(200, Math.floor(params.width));
     const height = Math.max(300, Math.floor(params.height));
     const passageWidth = clamp(params.passageWidth ?? 60, 24, 200);
-    const density = clamp(params.obstacleDensity ?? 0.4, 0.01, 2);
+    const density = clamp(params.obstacleDensity ?? 0.4, 0, 2);
     const blobScale = clamp(params.blobScale ?? 1, 0.1, 4);
     const bottomMargin = clamp(height * BOTTOM_FREE_RATIO, CELL * 2, height * 0.25);
     const topFree = clamp(params.topFreeHeight ?? 0, 0, height * 0.4);
@@ -183,6 +183,9 @@ export class LevelGenerator {
     // частоты REF: паттерн препятствий НЕ зависит от разрешения экрана —
     // тот же seed и настройки дают похожий лабиринт на любом устройстве.
     // Порог подобран так, что density=0.4 даёт ~30% заполнения.
+    // density = 0 — ПОЛНОСТЬЮ пустое поле (последние уровни): заливка
+    // пропускается, весь дальнейший пайплайн — no-op.
+    if (density > 0) {
     const threshold = 0.685 - density * 0.25;
     // Частота домен-варпа (между частотами октав), в px-единицах референса
     const warpFreq = 0.009;
@@ -210,6 +213,7 @@ export class LevelGenerator {
           grid[cy * cols + cx] = 1;
         }
       }
+    }
     }
 
     // --- 2.5 Форма и размер структур ---

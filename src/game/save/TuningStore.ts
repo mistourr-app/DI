@@ -15,14 +15,14 @@ export interface ElementTuning {
   radius: number;
 }
 
-/** Полный снимок параметров поп-апа */
+/** Полный снимок параметров поп-апа.
+ *  enemySpeed/genDensity НЕ хранятся: задаются уровнем (сессионный оверрайд
+ *  поп-апа живёт до перезагрузки страницы). */
 export interface TuningSnapshot {
   spawnInterval: number;
   currentLevel: number;
   maxEnemiesOnScreen: number;
-  enemySpeed: number;
   enemySize: number;
-  genDensity: number;
   genBlobScale: number;
   godPower: {
     lightningKillCount: number;

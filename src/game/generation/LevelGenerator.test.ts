@@ -159,5 +159,15 @@ describe('LevelGenerator', () => {
         }
       }
     });
+
+    it('плотность 0 — полностью пустое поле (последние уровни)', () => {
+      const level = gen.generate({ seed: 'empty-1', width: 544, height: 976, obstacleDensity: 0 });
+      const blocked = blockedOf(level);
+      for (let i = 0; i < blocked.length; i++) {
+        expect(blocked[i]).toBe(0);
+      }
+      expect(isPassable(level)).toBe(true);
+      expect(level.obstacles).toHaveLength(0);
+    });
   });
 });
