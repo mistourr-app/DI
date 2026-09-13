@@ -135,6 +135,8 @@ export class GameScene extends Phaser.Scene {
   private elementMana = new ElementManaSystem(GameConfig.elements);
   private elementDrawer!: ElementDrawer;
   private altars = new Map<ElementType, ElementAltarIcon>();
+  /** Подписи стихий под алтарями (пересоздаются вместе с алтарями) */
+  private elementLabels: Phaser.GameObjects.Text[] = [];
   /** Земля-барьер (Итерация 2): ячейки земли, прогрызаемые монстрами */
   private earthBarrier!: EarthBarrierSystem;
   /** Эффекты стихий (Итерация 4): горение/замедление/отброс по зонам штриха */
@@ -681,9 +683,11 @@ export class GameScene extends Phaser.Scene {
     // Иконки базы выше дна стакана (BASE_GROUND_DEPTH=110), ниже монстров (850)
     this.godIcon.setDepth(BASE_UI_DEPTH);
 
-    // Пересоздаём алтари (при resize) — старые иконки уничтожаются
+    // Пересоздаём алтари (при resize) — старые иконки и подписи уничтожаются
     this.altars.forEach(a => a.destroy());
     this.altars.clear();
+    for (const l of this.elementLabels) l.destroy();
+    this.elementLabels = [];
 
     elements.forEach(element => {
       const elementX = centerX + (element.offset * elementSpacing);
@@ -698,6 +702,7 @@ export class GameScene extends Phaser.Scene {
       });
       nameLabel.setOrigin(0.5);
       nameLabel.setDepth(BASE_UI_DEPTH);
+      this.elementLabels.push(nameLabel);
 
       // Алтарь: круг, заливка маны цветом стихии снизу вверх (как у силы бога)
       const altar = new ElementAltarIcon(this, elementX, elementY, elementRadius, {
