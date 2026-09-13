@@ -1885,7 +1885,7 @@ this.scale.off('resize', this.handleResize, this);
     // Строки: уровень/2 генерации + дебаг. Прокачиваемые и настраиваемые в
     // прокачке параметры из поп-апа УБРАНЫ (скорость, заряд бога, радиус
     // штриха, длительности стихий/статусов) — живут на экране прокачки.
-    const rowCount = 4;
+    const rowCount = 5;
     const panelHeight = headerH + rowCount * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(padPx(20), screenHeight * 0.06));
@@ -2012,6 +2012,19 @@ this.scale.off('resize', this.handleResize, this);
       () => { this.debugPanelEnabled = true; this.refreshDebugPanel(); },
       () => (this.debugPanelEnabled ? 'Вкл' : 'Выкл')
     );
+
+    // Кнопка сброса душ (рядом с сбросом прокачки)
+    const soulsResetX = px + panelWidth - padPx(14) - ctrlBlockW - padPx(8);
+    const soulsResetBtn = this.add.text(soulsResetX, py + headerH, '↺ сбросить души', {
+      font: `bold ${fontPx(11)}px Arial`,
+      color: '#ff6666',
+      backgroundColor: '#444444',
+      padding: { x: padPx(6), y: padPx(2) }
+    }).setInteractive({ useHandCursor: true });
+    soulsResetBtn.on('pointerdown', () => { this.progression.resetSouls(); this.rebuildProgressionContent(); });
+    soulsResetBtn.on('pointerover', () => soulsResetBtn.setStyle({ backgroundColor: '#666666' }));
+    soulsResetBtn.on('pointerout', () => soulsResetBtn.setStyle({ backgroundColor: '#444444' }));
+    popup.add(soulsResetBtn);
 
     // Кнопка генерации нового уровня
     const genY = y + padPx(4);

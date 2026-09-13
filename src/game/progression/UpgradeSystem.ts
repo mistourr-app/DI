@@ -100,6 +100,12 @@ export class UpgradeSystem {
     this.save();
   }
 
+  /** Сбросить только количество собранных душ (обнулить souls) */
+  resetSouls(): void {
+    this.souls = 0;
+    this.save();
+  }
+
   /** Сумма душ, возвращаемых при полном сбросе (все вложенные) */
   spentSouls(): number {
     let total = 0;
