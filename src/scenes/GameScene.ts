@@ -200,6 +200,10 @@ export class GameScene extends Phaser.Scene {
   private static readonly DENSITY_MIN = 0;
   private static readonly DENSITY_MAX = 2;
 
+  /** Размер структур (blobScale): линейно 1.5 (1-й, крупнее) → 0.75 (50-й, мельче) */
+  private static readonly BLOB_SCALE_MIN = 0.75;
+  private static readonly BLOB_SCALE_MAX = 1.5;
+
   /** Скорость монстров уровня (линейная прогрессия) */
   static levelSpeed(level: number): number {
     const t = (level - 1) / (GameScene.MAX_LEVEL - 1);
@@ -210,6 +214,12 @@ export class GameScene extends Phaser.Scene {
   static levelDensity(level: number): number {
     const t = (level - 1) / (GameScene.MAX_LEVEL - 1);
     return GameScene.DENSITY_MAX + (GameScene.DENSITY_MIN - GameScene.DENSITY_MAX) * t;
+  }
+
+  /** Размер структур уровня (линейная прогрессия: крупнее → мельче) */
+  static levelBlobScale(level: number): number {
+    const t = (level - 1) / (GameScene.MAX_LEVEL - 1);
+    return GameScene.BLOB_SCALE_MAX + (GameScene.BLOB_SCALE_MIN - GameScene.BLOB_SCALE_MAX) * t;
   }
 
   constructor() {
@@ -281,8 +291,8 @@ export class GameScene extends Phaser.Scene {
     // (влияют на currentLevel, ген-параметры, скорость/размер врагов)
     this.applyStoredTuning();
 
-    // Скорость и плотность задаются уровнем (линейная прогрессия);
-    // сессионные оверрайды из поп-апа поверх — отсутствуют при старте
+    // Скорость задаётся уровнем (линейная прогрессия); плотность — тоже
+    // уровнем, но оверрайд поп-апа восстанавливается из localStorage
     this.applyLevelScaling();
 
     this.totalEnemiesToSpawn = this.currentLevel * GameScene.MONSTERS_PER_LEVEL_STEP;
@@ -1928,7 +1938,8 @@ export class GameScene extends Phaser.Scene {
     );
 
     // --- Параметры генерации уровня: пересборка на лету с тем же seed ---
-    // Плотность по умолчанию задаётся уровнем; степпер — сессионный оверрайд
+    // Плотность по умолчанию задаётся уровнем (база — при смене уровня);
+    // степпер — сессионный оверрайд, переживающий рестарты и перезагрузку
     addRow('Плотность препятствий',
       () => { this.genDensity = Math.max(0, +(this.genDensity - 0.05).toFixed(2)); this.generateLevel(); },
       () => { this.genDensity = Math.min(2, +(this.genDensity + 0.05).toFixed(2)); this.generateLevel(); },
@@ -2097,8 +2108,9 @@ export class GameScene extends Phaser.Scene {
       currentLevel: this.currentLevel,
       maxEnemiesOnScreen: this.maxEnemiesOnScreen,
       enemySize: this.enemySize,
-      // enemySpeed/genDensity НЕ сохраняются: задаются уровнем,
-      // сессионные оверрайды поп-апа живут до перезагрузки страницы
+      // enemySpeed НЕ сохраняется: задаётся уровнем (сессионный оверрайд
+      // поп-апа живёт до перезагрузки страницы); genDensity — сохраняется
+      genDensity: this.genDensity,
       genBlobScale: this.genBlobScale,
       godPower: {
         lightningKillCount: GameConfig.godPower.lightningKillCount,
@@ -2129,7 +2141,19 @@ export class GameScene extends Phaser.Scene {
       this.maxEnemiesOnScreen = Math.min(Math.max(10, snap.maxEnemiesOnScreen), MAX_AGENTS);
     }
     if (typeof snap.enemySize === 'number') this.enemySize = snap.enemySize;
-    if (typeof snap.genBlobScale === 'number') this.genBlobScale = snap.genBlobScale;
+    if (typeof snap.genBlobScale === 'number') {
+      this.genBlobScale = snap.genBlobScale;
+    } else {
+      // Нет сохранённого оверрайда — базовый размер структур уровня
+      this.genBlobScale = GameScene.levelBlobScale(this.currentLevel);
+    }
+    if (typeof snap.genDensity === 'number') {
+      this.genDensity = snap.genDensity;
+    } else {
+      // Нет сохранённого оверрайда — плотность базовой (уровень только
+      // что восстановлен из снимка, см. выше)
+      this.genDensity = GameScene.levelDensity(this.currentLevel);
+    }
 
     if (snap.godPower) {
       if (typeof snap.godPower.lightningKillCount === 'number') {
@@ -2284,6 +2308,10 @@ export class GameScene extends Phaser.Scene {
   /** Выбор уровня в поп-апе: перезапуск с указанного уровня */
   private setLevel(level: number): void {
     this.currentLevel = Phaser.Math.Clamp(level, 1, GameScene.MAX_LEVEL);
+    // Новый уровень задаёт свои базовые плотность и размер структур
+    // (оверрайды поп-апа сбрасываются только при смене уровня, не при рестартах)
+    this.genDensity = GameScene.levelDensity(this.currentLevel);
+    this.genBlobScale = GameScene.levelBlobScale(this.currentLevel);
     this.restartLevel(false);
     // Прогресс уровня запоминается и для победы (nextLevel), и для поп-апа
     this.persistTuning();
@@ -2301,13 +2329,14 @@ export class GameScene extends Phaser.Scene {
    * (иначе мягкий лок); между уровнями HP базы НЕ восстанавливается
    */
   /**
-   * Скорость и плотность препятствий задаются уровнем (линейная прогрессия,
-   * см. levelSpeed/levelDensity). Вызывается при каждом входе на уровень —
-   * сессионные оверрайды поп-апа сбрасываются к базовым значениям уровня.
+   * Скорость задаётся уровнем (линейная прогрессия, см. levelSpeed).
+   * Плотность и размер структур в рестартах НЕ сбрасываются: сессионные
+   * оверрайды поп-апа переживают рестарты и перезагрузку страницы
+   * (см. TuningStore); базовые значения уровня выставляются только при
+   * смене уровня (setLevel).
    */
   private applyLevelScaling(): void {
     this.enemySpeed = GameScene.levelSpeed(this.currentLevel);
-    this.genDensity = GameScene.levelDensity(this.currentLevel);
   }
 
   private restartLevel(restoreHealth: boolean): void {
