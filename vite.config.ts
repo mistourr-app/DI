@@ -1,10 +1,38 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { VitePWA } from 'vite-plugin-pwa';
+
+/** Абсолютный путь к docs/balance_1.csv (ESM-safe, без __dirname) */
+const balancePath = fileURLToPath(new URL('./docs/balance_1.csv', import.meta.url));
+
+/**
+ * Виртуальный модуль virtual:balance — содержимое docs/balance_1.csv
+ * (единственный источник баланса). ?raw-импорт из docs/ Vite'ом напрямую
+ * не резолвится, поэтому файл читается плагином на этапе сборки.
+ * addWatchFile: dev-сервер перечитывает CSV при его изменении (иначе
+ * показывались устаревшие цены).
+ */
+function balanceCsvPlugin(): Plugin {
+  return {
+    name: 'balance-csv',
+    resolveId(id) {
+      if (id === 'virtual:balance') return '\0virtual:balance';
+    },
+    load(id) {
+      if (id !== '\0virtual:balance') return;
+      this.addWatchFile(balancePath);
+      const csv = readFileSync(balancePath, 'utf8');
+      return `export default ${JSON.stringify(csv)};`;
+    }
+  };
+}
 
 export default defineConfig({
   // GitHub Pages публикует репозиторий в подкаталог: /DI/
   base: '/DI/',
   plugins: [
+    balanceCsvPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.png', 'apple-touch-icon.png'],

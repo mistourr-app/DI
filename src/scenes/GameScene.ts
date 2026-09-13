@@ -12,6 +12,8 @@ import { ElementAltarIcon } from '../game/element/ElementAltarIcon';
 import { EarthBarrierSystem } from '../game/element/EarthBarrierSystem';
 import { ElementEffectSystem } from '../game/element/ElementEffectSystem';
 import { TuningStore, type TuningSnapshot } from '../game/save/TuningStore';
+import { UpgradeSystem } from '../game/progression/UpgradeSystem';
+import { upgradeCatalog, upgradeDefs, valueAt, displayValue, type UpgradeDef } from '../game/progression/upgradeCatalog';
 import monsterBaseUrl from '../assets/monster_base.png';
 import obstaclesBlobUrl from '../assets/obstacles_blob.png';
 import obstaclesBlobInfernoUrl from '../assets/obstacles_blob_inferno.png';
@@ -288,6 +290,10 @@ export class GameScene extends Phaser.Scene {
     // уровнем, но оверрайд поп-апа восстанавливается из localStorage
     this.applyLevelScaling();
 
+    // Мета-прокачка применяется ПОСЛЕ восстановления тюнинга: значения из
+    // уровней прокачки — авторитетный источник для качаемых полей
+    this.applyAllProgression();
+
     this.totalEnemiesToSpawn = this.currentLevel * GameScene.MONSTERS_PER_LEVEL_STEP;
 
     // Fluid simulation: воркер физики толпы (fallback — main-thread путь)
@@ -326,8 +332,10 @@ export class GameScene extends Phaser.Scene {
 
     // Снимаем его при остановке сцены (иначе после scene.restart() обработчик задублируется)
     this.events.once('shutdown', () => {
-      this.scale.off('resize', this.handleResize, this);
+this.scale.off('resize', this.handleResize, this);
       this.settingsOpen = false;
+      this.progressionRoot = null;
+      this.progressionContent = null;
       // Останавливаем воркер физики и чистим карту спрайт<->агент
       if (this.fluidCtrl) {
         this.fluidCtrl.destroy();
@@ -440,6 +448,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Игровое поле (9:19.5)
+    // ГЛАВНОЕ ПРАВИЛО UI: вся игра живёт внутри gameArea — все окна, поп-апы,
+    // экраны (прокачка, настройки и т.п.) размещаются ВНУТРИ этих границ,
+    // а не на всю ширину/высоту устройства (на широких экранах слева/справа
+    // остаётся «арт-окружение», за которое интерфейс выходить не должен).
     this.gameArea = new Phaser.Geom.Rectangle(gameX, gameY, gameWidth, gameHeight);
 
     // Поле боя (5/6 высоты игрового поля)
@@ -1687,6 +1699,10 @@ export class GameScene extends Phaser.Scene {
 
   private showVictory(): void {
     this.showEndMessage('Deus vivit', '#ffd700');
+    // Первое прохождение уровня: бонус +10·N душ (PROGRESSION §3)
+    this.progression.completeLevel(this.currentLevel);
+    // Полноэкранный экран прокачки; большая кнопка ИГРАТЬ ведёт на следующий уровень
+    this.openProgressionScreen();
   }
   
   private createHitEffect(x: number, y: number, radiusMul = 1): void {
@@ -1767,14 +1783,38 @@ export class GameScene extends Phaser.Scene {
 
   // --- Настройки: кнопка и поп-ап ---
   private settingsButton: Phaser.GameObjects.Text | null = null;
+  /** Служебная кнопка «убить всех монстров» (начислит души) */
+  private killAllButton: Phaser.GameObjects.Text | null = null;
   private settingsPopup: Phaser.GameObjects.Container | null = null;
   private settingsOpen: boolean = false;
   private popupUpdaters: Array<{ text: Phaser.GameObjects.Text, getValue: () => string }> = [];
+
+  // --- Прокачка (мета-прогресс между забегами, PROGRESSION.md) ---
+  private progression = new UpgradeSystem(upgradeCatalog);
+  /** Начислять ли души за убийства (выключается при очистке уровня в рестарте) */
+  private awardingSouls: boolean = true;
+  /** Полноэкранный экран прокачки (открывается на победе уровня) */
+  private progressionRoot: Phaser.GameObjects.Container | null = null;
+  /** Скроллящийся список параметров (группы по стихиям) */
+  private progressionContent: Phaser.GameObjects.Container | null = null;
+  /** Прокрутка списка: текущий сдвиг, границы, состояние жеста */
+  private progressionScrollY: number = 0;
+  private progressionMaxScroll: number = 0;
+  private progressionViewportTop: number = 0;
+  private progressionViewportBottom: number = 0;
+  private progDragging: boolean = false;
+  private progDragStartY: number = 0;
+  private progScrollStart: number = 0;
+  private progMoved: boolean = false;
 
   private createSettingsButton(): void {
     if (this.settingsButton) {
       this.settingsButton.destroy();
       this.settingsButton = null;
+    }
+    if (this.killAllButton) {
+      this.killAllButton.destroy();
+      this.killAllButton = null;
     }
     const wasOpen = this.settingsOpen;
     this.closeSettingsPopup();
@@ -1793,6 +1833,20 @@ export class GameScene extends Phaser.Scene {
     btn.on('pointerover', () => btn.setStyle({ backgroundColor: '#555555' }));
     btn.on('pointerout', () => btn.setStyle({ backgroundColor: '#333333' }));
     this.settingsButton = btn;
+
+    // Служебная кнопка «убить всех монстров» (начислит души): слева от ⚙.
+    // Проверка, что души за убийства корректно доходят до прокачки.
+    const kb = this.add.text(0, 0, '☠', {
+      font: `${fontPx(20)}px Arial`,
+      color: '#ffffff',
+      backgroundColor: '#4a2020',
+      padding: { x: padPx(10), y: padPx(6) }
+    }).setScrollFactor(0).setDepth(1000).setInteractive({ useHandCursor: true });
+    kb.setPosition(btn.x - kb.width - padPx(8), ga.y + padPx(4));
+    kb.on('pointerdown', () => { this.killAllMonsters(); });
+    kb.on('pointerover', () => kb.setStyle({ backgroundColor: '#6a3030' }));
+    kb.on('pointerout', () => kb.setStyle({ backgroundColor: '#4a2020' }));
+    this.killAllButton = kb;
 
     if (wasOpen) {
       this.openSettingsPopup();
@@ -1828,9 +1882,10 @@ export class GameScene extends Phaser.Scene {
     const rowHeight = fontPx(26); // компактные строки (панель растёт с числом строк)
     const genBtnH = fontPx(34);
     const padBottom = padPx(12);
-    // 6 строк уровня/скорости/генерации/силы бога + 8 строк баланса стихий/заряда
-    // + 3 строки длительности стихий/статуса/дебага
-    const rowCount = 17;
+    // Строки: уровень/2 генерации + дебаг. Прокачиваемые и настраиваемые в
+    // прокачке параметры из поп-апа УБРАНЫ (скорость, заряд бога, радиус
+    // штриха, длительности стихий/статусов) — живут на экране прокачки.
+    const rowCount = 4;
     const panelHeight = headerH + rowCount * rowHeight + genBtnH + padBottom;
     const px = Math.round((screenWidth - panelWidth) / 2);
     const py = Math.round(Math.max(padPx(20), screenHeight * 0.06));
@@ -1927,13 +1982,7 @@ export class GameScene extends Phaser.Scene {
       () => `${this.currentLevel} (${this.totalEnemiesToSpawn}) · скор ${this.enemySpeed.toFixed(2)} · плотн ${this.genDensity.toFixed(2)}`
     );
 
-    // Базовая скорость движения одного монстра.
-    // СЕССИОННЫЙ ОВЕРРАЙД уровня: сбрасывается при смене уровня
-    addRow('Скорость монстров',
-      () => { this.enemySpeed = Math.max(0.1, +(this.enemySpeed - 0.05).toFixed(2)); this.syncFluidParams(); },
-      () => { this.enemySpeed = Math.min(10, +(this.enemySpeed + 0.05).toFixed(2)); this.syncFluidParams(); },
-      () => `${this.enemySpeed.toFixed(2)}`
-    );
+    // Скорость монстров УБРАНА из поп-апа: задаётся уровнем (levelSpeed).
 
     // --- Параметры генерации уровня: пересборка на лету с тем же seed ---
     // Плотность по умолчанию задаётся уровнем (база — при смене уровня);
@@ -1953,110 +2002,9 @@ export class GameScene extends Phaser.Scene {
     // --- Силы жидкости: в конфиге (GameConfig.enemies.fluid), из поп-апа
     // убраны как перегруз UI; тюнинг — через код/«Сброс сил» ---
 
-    // --- Супер сила бога: балансные параметры (ГДД 2.5) ---
-    // superChargeRequired тоже в конфиге (из поп-апа убран)
-    const G = GameConfig.godPower;
-
-    addRow('Убийств за молнию',
-      () => { G.lightningKillCount = Math.max(1, G.lightningKillCount - 1); },
-      () => { G.lightningKillCount = Math.min(100, G.lightningKillCount + 1); },
-      () => `${G.lightningKillCount}`
-    );
-
-    addRow('Радиус супер атаки',
-      () => { G.superRadius = Math.max(40, G.superRadius - 10); },
-      () => { G.superRadius = Math.min(400, G.superRadius + 10); },
-      () => `${G.superRadius}`
-    );
-
-    // Убийств молнией для полной зарядки бара (выше = медленнее заряд)
-    addRow('Убийств на заряд бога',
-      () => {
-        G.superChargeRequired = Math.max(10, G.superChargeRequired - 10);
-        this.godPower.onBalanceChanged();
-        this.godIcon?.redraw();
-      },
-      () => {
-        G.superChargeRequired = Math.min(500, G.superChargeRequired + 10);
-        this.godPower.onBalanceChanged();
-        this.godIcon?.redraw();
-      },
-      () => `${G.superChargeRequired}`
-    );
-
-    // --- Стихии: баланс (мана за убийство / стоимость / радиус штриха) ---
-
-    // gainPerKill — общий для всех алтарей (0.1..2); конфиг остаётся per-altar
-    addRow('Мана за убийство',
-      () => {
-        const v = +(GameConfig.elements.fire.gainPerKill - 0.1).toFixed(1);
-        for (const k of ELEMENT_KEYS) GameConfig.elements[k].gainPerKill = Math.max(0.1, v);
-      },
-      () => {
-        const v = +(GameConfig.elements.fire.gainPerKill + 0.1).toFixed(1);
-        for (const k of ELEMENT_KEYS) GameConfig.elements[k].gainPerKill = Math.min(2, v);
-      },
-      () => GameConfig.elements.fire.gainPerKill.toFixed(1)
-    );
-
-    // costPerUse — отдельно у каждого алтаря (1..100); цена за юнит длины
-    const costRows: Array<[ElementType, string]> = [
-      ['fire', `Стоимость огня (${GameConfig.elementStrokeUnit}px)`],
-      ['water', `Стоимость воды (${GameConfig.elementStrokeUnit}px)`],
-      ['earth', `Стоимость земли (${GameConfig.elementStrokeUnit}px)`],
-      ['air', `Стоимость воздуха (${GameConfig.elementStrokeUnit}px)`]
-    ];
-    for (const [key, label] of costRows) {
-      addRow(label,
-        () => {
-          GameConfig.elements[key].costPerUse = Math.max(1, GameConfig.elements[key].costPerUse - 1);
-          this.elementMana.onBalanceChanged();
-        },
-        () => {
-          GameConfig.elements[key].costPerUse = Math.min(100, GameConfig.elements[key].costPerUse + 1);
-          this.elementMana.onBalanceChanged();
-        },
-        () => `${GameConfig.elements[key].costPerUse}`
-      );
-    }
-
-    // radius штриха — общий для всех алтарей (10..100)
-    addRow('Радиус штриха',
-      () => {
-        const v = GameConfig.elements.fire.radius - 5;
-        for (const k of ELEMENT_KEYS) GameConfig.elements[k].radius = Math.max(10, v);
-      },
-      () => {
-        const v = GameConfig.elements.fire.radius + 5;
-        for (const k of ELEMENT_KEYS) GameConfig.elements[k].radius = Math.min(100, v);
-      },
-      () => `${GameConfig.elements.fire.radius}`
-    );
-
-    // Прочность Земли: укусов держит ячейка (выше = грызут медленнее).
-    // Прокачиваемый атрибут: пока ручка в поп-апе, экономика прокачки — потом
-    addRow('Прочность земли (укусов)',
-      () => { GameConfig.earth.bitesPerCell = Math.max(1, GameConfig.earth.bitesPerCell - 1); },
-      () => { GameConfig.earth.bitesPerCell = Math.min(100, GameConfig.earth.bitesPerCell + 1); },
-      () => `${GameConfig.earth.bitesPerCell}`
-    );
-
-    // --- Эффекты стихий (Итерация 4): длительность зоны Огонь/Вода/Воздух ---
-    // Одна ручка на три стихии; конфиг остаётся per-element (duration) для
-    // будущей раздельной прокачки времени каждой стихии
-    addRow('Длительность стихий, с',
-      () => { this.setElementDurations(GameConfig.elements.fire.duration - 1); },
-      () => { this.setElementDurations(GameConfig.elements.fire.duration + 1); },
-      () => `${GameConfig.elements.fire.duration}`
-    );
-
-    // Длительность статуса «мокрый»/«сдутый» после выхода из зоны
-    // (вода/воздух). Конфиг per-element для будущей раздельной прокачки
-    addRow('Длительность статуса, с',
-      () => { this.setStatusDuration(GameConfig.elements.water.wetDuration - 1); },
-      () => { this.setStatusDuration(GameConfig.elements.water.wetDuration + 1); },
-      () => `${GameConfig.elements.water.wetDuration}`
-    );
+    // Прокачиваемые параметры УБРАНЫ из поп-апа (на экране прокачки):
+    // сила бога (lightningKillCount/superRadius/superChargeRequired),
+    // радиус штриха, длительности стихий и статусов.
 
     // Тоггл дебаг-панели (по умолчанию выключена)
     addRow('Дебаг-панель',
@@ -2118,10 +2066,6 @@ export class GameScene extends Phaser.Scene {
       earth: {
         bitesPerCell: GameConfig.earth.bitesPerCell
       },
-      effects: {
-        duration: GameConfig.elements.fire.duration,
-        statusDuration: GameConfig.elements.water.wetDuration ?? 5
-      },
       elements
     };
   }
@@ -2181,13 +2125,6 @@ export class GameScene extends Phaser.Scene {
     if (snap.earth && typeof snap.earth.bitesPerCell === 'number') {
       GameConfig.earth.bitesPerCell = Math.max(1, Math.round(snap.earth.bitesPerCell));
     }
-
-    if (snap.effects && typeof snap.effects.duration === 'number') {
-      this.setElementDurations(snap.effects.duration);
-    }
-    if (snap.effects && typeof snap.effects.statusDuration === 'number') {
-      this.setStatusDuration(snap.effects.statusDuration);
-    }
   }
 
   /** Сохранение текущего тюнинга в localStorage */
@@ -2195,20 +2132,249 @@ export class GameScene extends Phaser.Scene {
     TuningStore.save(this.collectTuning());
   }
 
-  /** Одинаковая длительность зоны Огонь/Вода/Воздух (будущая раздельная прокачка) */
-  private setElementDurations(value: number): void {
-    const d = Phaser.Math.Clamp(value, 1, 30);
-    GameConfig.elements.fire.duration = d;
-    GameConfig.elements.water.duration = d;
-    GameConfig.elements.air.duration = d;
+  // --- Прокачка: полноэкранный экран ---
+
+  /** Группы параметров по стихиям (порядок: Огонь, Вода, Земля, Воздух, Бог) */
+  private buildProgressionGroups(): Array<{ name: string; defs: UpgradeDef[] }> {
+    const byEl: Record<string, UpgradeDef[]> = {};
+    for (const d of upgradeDefs) {
+      const k = d.element ?? 'god';
+      (byEl[k] = byEl[k] ?? []).push(d);
+    }
+    const nameMap: Record<string, string> = {
+      fire: '🔥 Огонь',
+      water: '💧 Вода',
+      earth: '🌍 Земля',
+      air: '💨 Воздух',
+      god: '⚡ Сила бога'
+    };
+    return ['fire', 'water', 'earth', 'air', 'god'].map((k) => ({
+      name: nameMap[k],
+      defs: byEl[k] ?? []
+    }));
   }
 
-  /** Одинаковая длительность статуса «мокрый»/«сдутый» (будущая раздельная) */
-  private setStatusDuration(value: number): void {
-    const d = Phaser.Math.Clamp(value, 0, 30);
-    GameConfig.elements.water.wetDuration = d;
-    GameConfig.elements.air.airDuration = d;
-    this.syncFluidParams();
+  /** Открыть полноэкранный экран прокачки (на победе уровня).
+   *  ВАЖНОЕ ПРАВИЛО: все окна/попапы/экраны живут ВНУТРИ this.gameArea
+   *  (границ игрового поля 9:19.5), а не на всю ширину устройства. */
+  private openProgressionScreen(): void {
+    this.closeProgressionScreen();
+    const g = this.gameArea; // Rectangle: x, y, width, height (игровое поле)
+    const gx = g.x;
+    const gy = g.y;
+    const gw = g.width;
+    const gh = g.height;
+
+    const root = this.add.container(0, 0).setScrollFactor(0).setDepth(1250);
+    this.progressionRoot = root;
+
+    // Фон внутри границ игрового поля + обводка
+    const bg = this.add.graphics();
+    bg.fillStyle(0x070b14, 0.985);
+    bg.fillRect(gx, gy, gw, gh);
+    bg.lineStyle(padPx(2), 0x1a2b4a, 1);
+    bg.strokeRect(gx, gy, gw, gh);
+    root.add(bg);
+
+    // --- Шапка: заголовок + баланс душ + служебный сброс ---
+    const pad = padPx(14);
+    const headerH = fontPx(72);
+    root.add(this.add.text(gx + gw / 2, gy + pad + fontPx(12), 'ПРОКАЧКА', {
+      font: `bold ${fontPx(22)}px Arial`,
+      color: '#ffffff'
+    }).setOrigin(0.5, 0));
+    root.add(this.add.text(gx + gw / 2, gy + pad + fontPx(44), `Души: ${this.progression.totalSouls}`, {
+      font: `bold ${fontPx(15)}px Arial`,
+      color: '#ffd700'
+    }).setOrigin(0.5, 0));
+
+    // Служебная кнопка сброса (маленькая, незаметная) в верхнем правом углу поля
+    const resetBtn = this.add.text(gx + gw - pad, gy + pad + fontPx(2), '↺', {
+      font: `bold ${fontPx(13)}px Arial`,
+      color: '#555555',
+      backgroundColor: '#1a1f2e',
+      padding: { x: padPx(6), y: padPx(2) }
+    }).setInteractive({ useHandCursor: true });
+    resetBtn.on('pointerdown', () => {
+      this.progression.reset();
+      this.applyAllProgression();
+      this.rebuildProgressionContent();
+    });
+    root.add(resetBtn);
+
+    // --- Область списка (внутри игрового поля) ---
+    const bottomH = fontPx(96);
+    const viewportTop = gy + headerH;
+    const viewportBottom = gy + gh - bottomH;
+    this.progressionViewportTop = viewportTop;
+    this.progressionViewportBottom = viewportBottom;
+    const viewportW = gw;
+
+    // Маска: содержимое списка видно только между шапкой и нижней панелью
+    const maskRect = this.make.graphics({ x: 0, y: 0 }, false);
+    maskRect.fillRect(gx, viewportTop, viewportW, viewportBottom - viewportTop);
+    const mask = new Phaser.Display.Masks.GeometryMask(this, maskRect);
+
+    const content = this.add.container(0, viewportTop).setMask(mask);
+    root.add(content);
+    this.progressionContent = content;
+
+    this.rebuildProgressionContent();
+    this.setProgressionScroll(0);
+
+    // --- Нижняя панель: большая кнопка ИГРАТЬ (внутри игрового поля) ---
+    const playH = fontPx(58);
+    const playW = Math.min(gw - pad * 2, fontPx(320));
+    const playX = gx + gw / 2 - playW / 2;
+    const playY = gy + gh - bottomH / 2 - playH / 2 + fontPx(8);
+    const playBg = this.add.graphics();
+    playBg.fillStyle(0x2e8b57, 1);
+    playBg.fillRoundedRect(playX, playY, playW, playH, padPx(12));
+    root.add(playBg);
+    root.add(this.add.text(gx + gw / 2, playY + playH / 2, '▶ ИГРАТЬ', {
+      font: `bold ${fontPx(20)}px Arial`,
+      color: '#ffffff'
+    }).setOrigin(0.5));
+    const playZone = this.add.zone(playX, playY, playW, playH).setOrigin(0).setInteractive({ useHandCursor: true });
+    playZone.on('pointerdown', () => {
+      this.closeProgressionScreen();
+      this.nextLevel();
+    });
+    root.add(playZone);
+  }
+
+  private closeProgressionScreen(): void {
+    if (this.progressionRoot) {
+      this.progressionRoot.destroy(true);
+      this.progressionRoot = null;
+    }
+    this.progressionContent = null;
+    this.progDragging = false;
+  }
+
+  /** Сдвиг списка (clamp к границам). Контент уезжает ВВЕРХ при скролле вниз —
+   *  setY = viewportTop − scroll, иначе низ списка (Сила бога) недостижим. */
+  private setProgressionScroll(y: number): void {
+    this.progressionScrollY = Phaser.Math.Clamp(y, 0, this.progressionMaxScroll);
+    if (this.progressionContent) {
+      this.progressionContent.setY(this.progressionViewportTop - this.progressionScrollY);
+    }
+  }
+
+  /** Пересобрать список параметров (группы по стихиям) и баланс душ */
+  private rebuildProgressionContent(): void {
+    if (!this.progressionRoot || !this.progressionContent) return;
+    this.progressionContent.removeAll(true);
+    // Обновить баланс душ в шапке
+    const root = this.progressionRoot;
+    root.each((child: Phaser.GameObjects.GameObject) => {
+      const t = child as Phaser.GameObjects.Text;
+      if (t && (t as any).text && String((t as any).text).startsWith('Души:')) {
+        t.setText(`Души: ${this.progression.totalSouls}`);
+      }
+    });
+
+    const viewportW = this.gameArea.width;
+    const pad = padPx(14);
+    const groupH = fontPx(32);
+    const content = this.progressionContent;
+
+    let y = 0;
+    for (const g of this.buildProgressionGroups()) {
+      // Заголовок группы (x — мировые координаты: gx + отступ)
+      const headerText = this.add.text(this.gameArea.x + pad, y + padPx(2), g.name, {
+        font: `bold ${fontPx(14)}px Arial`,
+        color: '#ffd700'
+      });
+      content.add(headerText);
+      y += Math.max(groupH, headerText.height + padPx(8));
+      for (const def of g.defs) {
+        y += this.renderProgressionRow(content, def, y, viewportW, pad);
+      }
+      y += fontPx(8);
+    }
+
+    // Нижний отступ: последняя группа (Сила бога) полностью видна над кнопкой ИГРАТЬ
+    y += fontPx(40);
+
+    const contentH = y;
+    this.progressionMaxScroll = Math.max(0, contentH - (this.progressionViewportBottom - this.progressionViewportTop));
+    this.setProgressionScroll(this.progressionScrollY);
+  }
+
+  /** Одна строка параметра: название · значение → следующее · [КУПИТЬ].
+   *  Возвращает реальную высоту строки (заголовок может переноситься). */
+  private renderProgressionRow(
+    container: Phaser.GameObjects.Container,
+    def: UpgradeDef,
+    y: number,
+    viewportW: number,
+    pad: number
+  ): number {
+    const gx = this.gameArea.x;
+    const rowH = fontPx(28);
+    const labelW = viewportW * 0.46;
+    const leftX = gx + pad;
+
+    const titleText = this.add.text(leftX, y + padPx(3), def.title, {
+      font: `${fontPx(12)}px Arial`,
+      color: '#bbbbbb',
+      wordWrap: { width: labelW }
+    });
+    container.add(titleText);
+
+    container.add(this.add.text(leftX + labelW + padPx(4), y + padPx(3), this.rowValue(def), {
+      font: `bold ${fontPx(12)}px Arial`,
+      color: '#ffffff'
+    }));
+
+    const cost = this.progression.costOf(def.key);
+    const btnW = fontPx(70);
+    const btnX = gx + viewportW - pad - btnW;
+    if (cost === null) {
+      container.add(this.add.text(btnX + btnW / 2, y + padPx(3), 'MAX', {
+        font: `bold ${fontPx(12)}px Arial`,
+        color: '#888888'
+      }).setOrigin(0.5, 0));
+    } else {
+      const affordable = this.progression.totalSouls >= cost;
+      const btnBg = this.add.graphics();
+      btnBg.fillStyle(affordable ? 0x2e7d32 : 0x444444, 1);
+      btnBg.fillRoundedRect(btnX, y, btnW, rowH - padPx(2), padPx(6));
+      container.add(btnBg);
+      container.add(this.add.text(btnX + btnW / 2, y + padPx(3), `🛒 ${cost}`, {
+        font: `bold ${fontPx(11)}px Arial`,
+        color: '#ffffff'
+      }).setOrigin(0.5, 0));
+      const zone = this.add.zone(btnX, y, btnW, rowH).setOrigin(0).setInteractive({ useHandCursor: true });
+      // Покупка по pointerup, чтобы драг-скролл, начавшийся на кнопке, не покупал
+      zone.on('pointerdown', () => { this.progMoved = false; });
+      zone.on('pointerup', () => {
+        if (this.progMoved) return;
+        if (this.buyUpgrade(def.key)) {
+          this.rebuildProgressionContent();
+        }
+      });
+      container.add(zone);
+    }
+
+    // Реальная высота: перенос заголовка или базовый rowH
+    return Math.max(rowH, titleText.height + padPx(6));
+  }
+
+  /** Строка «текущее → следующее» для параметра */
+  private rowValue(def: UpgradeDef): string {
+    const level = this.progression.levelOf(def.key);
+    const cur = valueAt(def, level);
+    const next = valueAt(def, Math.min(level + 1, def.values.length - 1));
+    return `${displayValue(def, cur)} → ${displayValue(def, next)}`;
+  }
+
+  /** Покупка уровня параметра: списать души + применить в конфиг */
+  private buyUpgrade(key: string): boolean {
+    if (!this.progression.buy(key)) return false;
+    this.applyProgression(key);
+    return true;
   }
 
   /** Новый seed и полный перезапуск сцены с новой генерацией уровня */
@@ -2226,10 +2392,12 @@ export class GameScene extends Phaser.Scene {
     // Тапы по поп-апу настроек поле боя не затрагивают
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       if (this.settingsOpen) return;
+      // Полноэкранный экран прокачки закрывает поле боя
+      if (this.progressionRoot) return;
       if (!this.battlefieldZone.contains(pointer.x, pointer.y)) return;
 
       if (this.victoryShown) {
-        this.nextLevel();
+        // Прогресс продолжается через кнопки экрана прокачки
         return;
       }
       if (this.gameOverShown) {
@@ -2290,9 +2458,31 @@ export class GameScene extends Phaser.Scene {
       }
       this.refreshAltarBars();
     });
-  }
 
-  /** Тап по полю боя без стихии: супер атака или обычная молния (ГДД 2.5) */
+    // Прокрутка списка на экране прокачки: драг в области списка двигает содержимое
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (!this.progressionRoot || this.progDragging) return;
+      if (pointer.y < this.progressionViewportTop || pointer.y > this.progressionViewportBottom) return;
+      this.progDragging = true;
+      this.progMoved = false;
+      this.progDragStartY = pointer.y;
+      this.progScrollStart = this.progressionScrollY;
+    });
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (!this.progDragging) return;
+      const delta = this.progDragStartY - pointer.y;
+      if (Math.abs(delta) > 4) this.progMoved = true;
+      this.setProgressionScroll(this.progScrollStart + delta);
+    });
+    this.input.on('pointerup', () => {
+      this.progDragging = false;
+    });
+    // Колесо мыши на десктопе
+    this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _over: any, _deltaX: number, deltaY: number) => {
+      if (!this.progressionRoot) return;
+      this.setProgressionScroll(this.progressionScrollY + deltaY * 0.6);
+    });
+  }
   private fireGodTap(x: number, y: number): void {
     if (this.godPower.isArmed) {
       this.castSuperAttack(x, y);
@@ -2337,11 +2527,35 @@ export class GameScene extends Phaser.Scene {
     this.enemySpeed = GameScene.levelSpeed(this.currentLevel);
   }
 
+  /** Применить все сохранённые уровни прокачки в GameConfig (при старте/ресете) */
+  private applyAllProgression(): void {
+    for (const key of Object.keys(upgradeCatalog)) {
+      upgradeCatalog[key].apply(this.progression.levelOf(key));
+    }
+    this.syncProgressionSystems();
+  }
+
+  /** Применить один параметр после покупки и синхронизировать системы */
+  private applyProgression(key: string): void {
+    upgradeCatalog[key].apply(this.progression.levelOf(key));
+    this.syncProgressionSystems();
+  }
+
+  /** Клэмпы маны/заряда и передача физических эффектов в воркер */
+  private syncProgressionSystems(): void {
+    this.elementMana?.onBalanceChanged();
+    this.godPower?.onBalanceChanged();
+    this.refreshAltarBars();
+    this.syncFluidParams();
+  }
+
   private restartLevel(restoreHealth: boolean): void {
     if (this.endText) {
       this.endText.destroy();
       this.endText = null;
     }
+    // Оверлеи прокачки привязаны к завершённому уровню — убираем
+    this.closeProgressionScreen();
     // Скорость и плотность уровня (сбрасывает сессионный оверрайд поп-апа)
     this.applyLevelScaling();
     // Каждый уровень — новая генерация
@@ -2349,12 +2563,15 @@ export class GameScene extends Phaser.Scene {
     this.generateLevel();
 
     const children = this.enemies.getChildren() as any[];
+    // Принудительная очистка монстров уровня: души за них не начисляются
+    this.awardingSouls = false;
     for (let i = 0; i < children.length; i++) {
       const e = children[i];
       if (e.active) {
         this.killEnemy(e);
       }
     }
+    this.awardingSouls = true;
     this.enemiesSpawned = 0;
     this.spawnTimer = 0;
     this.totalEnemiesToSpawn = this.currentLevel * GameScene.MONSTERS_PER_LEVEL_STEP;
@@ -2480,6 +2697,24 @@ export class GameScene extends Phaser.Scene {
     this.releaseOverlay(enemy);
     this.enemies.killAndHide(enemy);
     this.enemyCount--;
+    // 1 душа за каждое убийство (PROGRESSION §3); не начисляется при
+    // принудительной очистке уровня в рестарте (awardingSouls = false)
+    if (this.awardingSouls) {
+      this.progression.addSouls(1);
+    }
+  }
+
+  /** Служебно: убить всех живых монстров на поле (начислит души).
+   *  Проверка, что души за убийства доходят до прокачки. */
+  private killAllMonsters(): void {
+    const children = this.enemies.getChildren() as any[];
+    for (let i = 0; i < children.length; i++) {
+      const e = children[i];
+      if (e.active) {
+        this.killEnemy(e); // killEnemy начисляет 1 душу за убийство
+      }
+    }
+    this.refreshAltarBars();
   }
 
   /** Вернуть двойник статуса в пул (у монстра, уходящего из боя) */
