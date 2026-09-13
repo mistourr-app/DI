@@ -56,8 +56,6 @@ const BASE_UI_DEPTH = 120;
 const HIT_EFFECT_DEPTH = 300;
 // Препятствия: блоб-тайлы под землёй (700) и штрихами (800), над фоном (0)
 const OBSTACLE_DEPTH = 600;
-// Запас запечённого огненного слоя под полукадр 16px тайла (клетки у кромок)
-const FIRE_LAYER_MARGIN = 8;
 // Размер тайла градиентной маски (размытие кромки фронта), px
 const FEATHER_TILE = 16;
 
@@ -618,22 +616,21 @@ export class GameScene extends Phaser.Scene {
 
     // Маски огненного слоя: origin (0.5, 1), низ = линия фронта.
     // 1) Жёсткая: вся область выше (фронт − INFERNO_FEATHER), __WHITE 1×1 →
-    //    scale = размер в px.
+    //    scale = размер в px. Покрывает ВЕСЬ экран: контейнер за пределами
+    //    игровой области перекрашивается в инферно по мере продвижения.
     // 2) Градиентная полоса: размытая кромка высотой INFERNO_FEATHER —
     //    текстура-градиент масштабируется 1:1 по высоте (альфа 1 → 0),
     //    поэтому ширина размытия постоянна при любом положении фронта.
     // Два замаскированных спрайта — O(1) на вызов.
     const feather = GameScene.INFERNO_FEATHER;
+    const screenW = this.cameras.main.width;
     if (this.infernoMaskSprite) {
-      this.infernoMaskSprite.setPosition(z.x + z.width / 2, frontY - feather);
-      this.infernoMaskSprite.setScale(
-        z.width + FIRE_LAYER_MARGIN * 2,
-        Math.max(0, frontY - feather - (z.y - FIRE_LAYER_MARGIN))
-      );
+      this.infernoMaskSprite.setPosition(screenW / 2, frontY - feather);
+      this.infernoMaskSprite.setScale(screenW, Math.max(0, frontY - feather));
     }
     if (this.infernoFeatherMaskSprite) {
-      this.infernoFeatherMaskSprite.setPosition(z.x + z.width / 2, frontY);
-      this.infernoFeatherMaskSprite.setScale(z.width + FIRE_LAYER_MARGIN * 2, feather / FEATHER_TILE);
+      this.infernoFeatherMaskSprite.setPosition(screenW / 2, frontY);
+      this.infernoFeatherMaskSprite.setScale(screenW, feather / FEATHER_TILE);
     }
   }
   
@@ -1142,8 +1139,6 @@ export class GameScene extends Phaser.Scene {
     // 32px для новых ассетов ×2, 16px — для старых (переходный период)
     const frameSize = this.textures.get(key).getSourceImage().width / 8;
     const z = this.battlefieldZone;
-    const ox = z.x;
-    const oy = z.y;
     const half = cf.cellSize / 2;
 
     // Блоб-тайлы: по спрайту на занятую клетку, кадр по 8 соседям.
@@ -1151,54 +1146,56 @@ export class GameScene extends Phaser.Scene {
     // Масштаб = cellSize/frameSize: кадры рендерятся ровно в клетку.
     const tileScale = cf.cellSize / frameSize;
     const group = this.add.group();
-    const blocked = cf.blocked;
 
-    // Виртуальная сетка РЕНДЕРА = поле боя + дно стакана (зона базы).
-    // База целиком «занята» только для отрисовки (сетка коллизий НЕ
-    // расширяется — монстры по-прежнему ходят по базе): нижний тайл
-    // стенок видит базу снизу и смыкается с ней бесшовно, а дно
-    // заливается блоб-тайлами из obstacles_blob.
-    const baseRows = Math.max(1, Math.ceil(this.baseZone.height / cf.cellSize));
-    const renderCols = cf.cols;
-    const renderRows = cf.rows + baseRows;
-    const renderBlocked = new Uint8Array(renderCols * renderRows);
-    renderBlocked.set(cf.blocked);
-    for (let cy = cf.rows; cy < renderRows; cy++) {
-      const row = cy * renderCols;
-      for (let cx = 0; cx < renderCols; cx++) {
-        renderBlocked[row + cx] = 1;
+    // Виртуальная сетка РЕНДЕРА = ВЕСЬ канвас: поле боя + дно стакана
+    // (зона базы) + поля за пределами игровой области (слева/справа на
+    // широких экранах, сверху/снизу на узких). Всё вне поля боя «занято»
+    // только для отрисовки (сетка коллизий НЕ расширяется — монстры
+    // по-прежнему ходят по базе): стенки стакана смыкаются с базой
+    // бесшовно, а весь экран становится одним блоб-контейнером.
+    const screenW = this.cameras.main.width;
+    const screenH = this.cameras.main.height;
+    const renderCols = Math.max(1, Math.ceil(screenW / cf.cellSize));
+    const renderRows = Math.max(1, Math.ceil(screenH / cf.cellSize));
+    const colOff = Math.max(0, Math.round(z.x / cf.cellSize));
+    const rowOff = Math.max(0, Math.round(z.y / cf.cellSize));
+    const renderBlocked = new Uint8Array(renderCols * renderRows).fill(1);
+    // Поле боя: свободные клетки остаются свободными (паттерн коллизий)
+    for (let gcy = 0; gcy < cf.rows; gcy++) {
+      const row = (rowOff + gcy) * renderCols + colOff;
+      for (let gcx = 0; gcx < cf.cols; gcx++) {
+        renderBlocked[row + gcx] = cf.blocked[gcy * cf.cols + gcx];
       }
     }
 
-    for (let cy = 0; cy < renderRows; cy++) {
-      const row = cy * renderCols;
-      for (let cx = 0; cx < renderCols; cx++) {
-        // Поле боя: только занятые клетки; дно стакана — все клетки
-        if (cy < cf.rows && renderBlocked[row + cx] !== 1) continue;
-        const frame = frameIndexForCell(renderBlocked, renderCols, renderRows, cx, cy);
+    for (let rcy = 0; rcy < renderRows; rcy++) {
+      const row = rcy * renderCols;
+      for (let rcx = 0; rcx < renderCols; rcx++) {
+        if (renderBlocked[row + rcx] !== 1) continue;
+        const frame = frameIndexForCell(renderBlocked, renderCols, renderRows, rcx, rcy);
         const s = this.add.image(
-          ox + cx * cf.cellSize + half,
-          oy + cy * cf.cellSize + half,
+          rcx * cf.cellSize + half,
+          rcy * cf.cellSize + half,
           key,
           frame
         );
         s.setScale(tileScale);
-        // Дно стакана — под иконками базы (BASE_GROUND_DEPTH), поле боя —
-        // в слое препятствий
-        s.setDepth(cy < cf.rows ? OBSTACLE_DEPTH : BASE_GROUND_DEPTH);
+        // Поле боя — в слое препятствий; контейнер (поля, дно) — под
+        // иконками базы (BASE_GROUND_DEPTH), но над землёй
+        const inField = rcx >= colOff && rcx < colOff + cf.cols && rcy >= rowOff && rcy < rowOff + cf.rows;
+        s.setDepth(inField ? OBSTACLE_DEPTH : BASE_GROUND_DEPTH);
         group.add(s);
       }
     }
 
-    // Огненный слой: весь лабиринт в огненной палитре запекается в ОДИН
-    // canvas (как рисуются спрайты: кадр 16×16 по центру клетки). Два
-    // спрайта одного запечённого слоя + две Bitmap-маски «выше линии
-    // фронта» (жёсткая + градиентная полоса размытия) — перекрас плавный
-    // и непрерывный, стоимость маски не зависит от числа блобов.
+    // Огненный слой: весь блоб-контейнер (весь канвас) в огненной палитре
+    // запекается в ОДИН canvas. Два спрайта одного запечённого слоя +
+    // две Bitmap-маски «выше линии фронта» (жёсткая + градиентная полоса
+    // размытия) — перекрас плавный и непрерывный, стоимость маски не
+    // зависит от числа блобов.
     if (fireKey) {
-      const margin = FIRE_LAYER_MARGIN; // полукадр тайла: клетки у кромок не обрезаются
-      const cw = Math.ceil(z.width) + margin * 2;
-      const ch = Math.ceil(z.height) + margin * 2;
+      const cw = Math.ceil(screenW);
+      const ch = Math.ceil(screenH);
       const cv = document.createElement('canvas');
       cv.width = cw;
       cv.height = ch;
@@ -1206,20 +1203,19 @@ export class GameScene extends Phaser.Scene {
       const src = this.textures.get(fireKey).getSourceImage() as HTMLImageElement;
       if (ctx) {
       // Кадры рисуются РОВНО в клетку (размер = cellSize) из источника
-      // frameSize×frameSize. Холст смещён на margin (origin спрайта =
-      // z.x - margin): левый край кадра клетки cx — cx*cellSize в мировых,
-      // в канвасе — cx*cellSize + margin.
-      for (let cy = 0; cy < cf.rows; cy++) {
-        const row = cy * cf.cols;
-        for (let cx = 0; cx < cf.cols; cx++) {
-          if (blocked[row + cx] !== 1) continue;
-          const frame = frameIndexForCell(blocked, cf.cols, cf.rows, cx, cy);
+      // frameSize×frameSize. Холст = весь экран, канвас-координаты =
+      // мировые (спрайт слоя в (0,0), origin (0,0)).
+      for (let rcy = 0; rcy < renderRows; rcy++) {
+        const row = rcy * renderCols;
+        for (let rcx = 0; rcx < renderCols; rcx++) {
+          if (renderBlocked[row + rcx] !== 1) continue;
+          const frame = frameIndexForCell(renderBlocked, renderCols, renderRows, rcx, rcy);
           const fx = (frame % 8) * frameSize;
           const fy = Math.floor(frame / 8) * frameSize;
           ctx.drawImage(
             src, fx, fy, frameSize, frameSize,
-            cx * cf.cellSize + margin,
-            cy * cf.cellSize + margin,
+            rcx * cf.cellSize,
+            rcy * cf.cellSize,
             cf.cellSize, cf.cellSize
           );
         }
@@ -1228,14 +1224,15 @@ export class GameScene extends Phaser.Scene {
       const layerKey = 'obstacle-fire-layer';
       if (this.textures.exists(layerKey)) this.textures.removeKey(layerKey);
       this.textures.addCanvas(layerKey, cv);
-      const fireImg = this.add.image(z.x - margin, z.y - margin, layerKey).setOrigin(0, 0);
+      const fireImg = this.add.image(0, 0, layerKey).setOrigin(0, 0);
       fireImg.setDepth(OBSTACLE_DEPTH);
 
       // Жёсткая маска: белый прямоугольник ВЫШЕ линии фронта (origin (0.5,1),
-      // низ = фронт − INFERNO_FEATHER). Спрайт-носитель не в display list.
+      // низ = фронт − INFERNO_FEATHER). Покрывает ВЕСЬ экран по ширине и от
+      // верха канваса до фронта. Спрайт-носитель не в display list.
       const maskSprite = this.make.image({
-        x: z.x + z.width / 2,
-        y: oy + GameScene.PEN_HEIGHT * UI_SCALE,
+        x: screenW / 2,
+        y: z.y + GameScene.PEN_HEIGHT * UI_SCALE,
         key: '__WHITE',
         add: false
       });
@@ -1264,11 +1261,11 @@ export class GameScene extends Phaser.Scene {
         this.textures.addCanvas(featherKey, fc);
       }
       // Второй спрайт того же запечённого слоя — только в полосе размытия
-      const featherImg = this.add.image(z.x - margin, z.y - margin, layerKey).setOrigin(0, 0);
+      const featherImg = this.add.image(0, 0, layerKey).setOrigin(0, 0);
       featherImg.setDepth(OBSTACLE_DEPTH);
       const featherMaskSprite = this.make.image({
-        x: z.x + z.width / 2,
-        y: oy + GameScene.PEN_HEIGHT * UI_SCALE,
+        x: screenW / 2,
+        y: z.y + GameScene.PEN_HEIGHT * UI_SCALE,
         key: featherKey,
         add: false
       });

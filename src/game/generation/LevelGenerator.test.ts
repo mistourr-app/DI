@@ -226,5 +226,27 @@ describe('LevelGenerator', () => {
         }
       }
     });
+
+    it('нет длинных горизонтальных гребней (разрыв 2.6, плотность < 1.5)', () => {
+      // После разрыва сегменты не длиннее RUN_SEG=6 + борт стакана (1 клетка) = 7
+      for (const density of [0.3, 0.4, 0.9, 1.2]) {
+        for (let s = 0; s < 5; s++) {
+          const level = gen.generate({ seed: `ledge-${density}-${s}`, width: 544, height: 976, obstacleDensity: density });
+          const cf = level.getCollisionField();
+          const { cols, rows, blocked } = cf;
+          for (let cy = 0; cy < rows; cy++) {
+            let run = 0;
+            for (let cx = 0; cx < cols; cx++) {
+              if (blocked[cy * cols + cx] === 1) {
+                run++;
+                expect(run).toBeLessThanOrEqual(7);
+              } else {
+                run = 0;
+              }
+            }
+          }
+        }
+      }
+    });
   });
 });
