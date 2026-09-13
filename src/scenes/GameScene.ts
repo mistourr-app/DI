@@ -2189,12 +2189,18 @@ this.scale.off('resize', this.handleResize, this);
       color: '#ffd700'
     }).setOrigin(0.5, 0));
 
-    // Служебная кнопка сброса (маленькая, незаметная) в верхнем правом углу поля
-    const resetBtn = this.add.text(gx + gw - pad, gy + pad + fontPx(2), '↺', {
-      font: `bold ${fontPx(13)}px Arial`,
+    // Кнопки сброса: прокачки (↺) и душ (↺) в правом верхнем углу окна прокачки
+    const btnY = gy + pad + fontPx(2);
+    const btnPad = padPx(6);
+    const btnFont = `bold ${fontPx(13)}px Arial`;
+    const btnBg = '#1a1f2e';
+    
+    // Кнопка сброса прокачки (возвращает души)
+    const resetBtn = this.add.text(gx + gw - pad, btnY, '↺ сбросить прокачку', {
+      font: btnFont,
       color: '#555555',
-      backgroundColor: '#1a1f2e',
-      padding: { x: padPx(6), y: padPx(2) }
+      backgroundColor: btnBg,
+      padding: { x: btnPad, y: padPx(2) }
     }).setInteractive({ useHandCursor: true });
     resetBtn.on('pointerdown', () => {
       this.progression.reset();
@@ -2202,12 +2208,13 @@ this.scale.off('resize', this.handleResize, this);
       this.rebuildProgressionContent();
     });
     root.add(resetBtn);
-    // Кнопка сброса душ (рядом с сбросом прокачки)
-    const soulsResetBtn = this.add.text(resetBtn.x - padPx(8), gy + pad + fontPx(2), '↺', {
-      font: `bold ${fontPx(13)}px Arial`,
+    
+    // Кнопка сброса душ (рядом, левее)
+    const soulsResetBtn = this.add.text(resetBtn.x - resetBtn.width - padPx(4), btnY, '↺ сбросить души', {
+      font: btnFont,
       color: '#ff6666',
-      backgroundColor: '#1a1f2e',
-      padding: { x: padPx(6), y: padPx(2) }
+      backgroundColor: btnBg,
+      padding: { x: btnPad, y: padPx(2) }
     }).setInteractive({ useHandCursor: true });
     soulsResetBtn.on('pointerdown', () => { this.progression.resetSouls(); this.rebuildProgressionContent(); });
     soulsResetBtn.on('pointerover', () => soulsResetBtn.setStyle({ color: '#ff8888' }));
