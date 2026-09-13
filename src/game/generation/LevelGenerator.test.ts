@@ -63,6 +63,38 @@ function isPassable(level: Level): boolean {
   return false;
 }
 
+/**
+ * Количество свободных клеток без пути вниз к нижней полосе (карманы).
+ * Тот же алгоритм, что в fillUndrained: сток — нижние botRows рядов.
+ */
+function undrainedCount(level: Level): number {
+  const cf = level.getCollisionField();
+  const { cols, rows, blocked } = cf;
+  const bottomMargin = Math.min(level.height * 0.25, Math.max(level.height * 0.1, 32));
+  const botRows = Math.min(rows, Math.ceil(bottomMargin / cf.cellSize));
+  const safe = new Uint8Array(cols * rows);
+  for (let cy = rows - botRows; cy < rows; cy++) {
+    const row = cy * cols;
+    for (let cx = 0; cx < cols; cx++) safe[row + cx] = 1;
+  }
+  for (let cy = rows - botRows - 1; cy >= 0; cy--) {
+    const row = cy * cols;
+    const below = row + cols;
+    for (let cx = 0; cx < cols; cx++) {
+      if (blocked[row + cx] === 0 && safe[below + cx] === 1) safe[row + cx] = 1;
+    }
+    for (let cx = 1; cx < cols; cx++) {
+      if (blocked[row + cx] === 0 && safe[row + cx] === 0 && safe[row + cx - 1] === 1) safe[row + cx] = 1;
+    }
+    for (let cx = cols - 2; cx >= 0; cx--) {
+      if (blocked[row + cx] === 0 && safe[row + cx] === 0 && safe[row + cx + 1] === 1) safe[row + cx] = 1;
+    }
+  }
+  let n = 0;
+  for (let i = 0; i < blocked.length; i++) if (blocked[i] === 0 && safe[i] === 0) n++;
+  return n;
+}
+
 describe('LevelGenerator', () => {
   describe('детерминизм', () => {
     it('тот же seed → идентичная сетка коллизий и полигоны', () => {
@@ -160,14 +192,39 @@ describe('LevelGenerator', () => {
       }
     });
 
-    it('плотность 0 — полностью пустое поле (последние уровни)', () => {
+    it('плотность 0 — пустое поле с бортами-стаканом (последние уровни)', () => {
       const level = gen.generate({ seed: 'empty-1', width: 544, height: 976, obstacleDensity: 0 });
-      const blocked = blockedOf(level);
-      for (let i = 0; i < blocked.length; i++) {
-        expect(blocked[i]).toBe(0);
+      const cf = level.getCollisionField();
+      const { cols, rows, blocked } = cf;
+      for (let cy = 0; cy < rows; cy++) {
+        for (let cx = 0; cx < cols; cx++) {
+          const expected = cx === 0 || cx === cols - 1 ? 1 : 0;
+          expect(blocked[cy * cols + cx]).toBe(expected);
+        }
       }
       expect(isPassable(level)).toBe(true);
-      expect(level.obstacles).toHaveLength(0);
+      expect(undrainedCount(level)).toBe(0);
+    });
+
+    it('борта-стакан: крайние колонки сплошные на любой плотности', () => {
+      for (const density of [0, 0.3, 0.4, 2]) {
+        const level = gen.generate({ seed: `cup-${density}`, width: 544, height: 976, obstacleDensity: density });
+        const cf = level.getCollisionField();
+        const { cols, rows, blocked } = cf;
+        for (let cy = 0; cy < rows; cy++) {
+          expect(blocked[cy * cols]).toBe(1);
+          expect(blocked[cy * cols + cols - 1]).toBe(1);
+        }
+      }
+    });
+
+    it('нет недренируемых клеток (карманы) на всех плотностях', () => {
+      for (const density of [0.3, 0.9, 2]) {
+        for (let s = 0; s < 5; s++) {
+          const level = gen.generate({ seed: `drain-${density}-${s}`, width: 544, height: 976, obstacleDensity: density });
+          expect(undrainedCount(level)).toBe(0);
+        }
+      }
     });
   });
 });

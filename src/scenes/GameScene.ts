@@ -18,8 +18,6 @@ import obstaclesBlobInfernoUrl from '../assets/obstacles_blob_inferno.png';
 import groundBaseUrl from '../assets/ground_base.png';
 import groundInfernoUrl from '../assets/ground_inferno.png';
 import groundInfernoFadeUrl from '../assets/ground_inferno_fade.png';
-import groundHolyUrl from '../assets/ground_holy.png';
-import groundHolyFadeUrl from '../assets/ground_holy_fade.png';
 import { StateOverlayPool } from '../game/visuals/stateOverlay';
 import { frameIndexForCell } from '../game/visuals/blobTiles';
 import { ensureObstacleAtlas, ensureObstacleInfernoAtlas } from '../game/visuals/blobAtlas';
@@ -41,17 +39,17 @@ const MIN_DRIFT_SQ = 0.0025;
 const GROUND_DEPTH = 100;
 // Fade-ряды перекрывают ground_base на ±1 тайл, чтобы смешать переход.
 // Inferno-fade ВЫШЕ holy-fade: фронт инферно визуально «съедает» переход
-// к святой земле. Оба фэйда НИЖЕ ground_holy (HOLY_GROUND_DEPTH) — fade,
-// сползающий в зону базы, прячется под святую землю (чисто декорация).
-const HOLY_FADE_DEPTH = 106;
+// к дну стакана. Оба фэйда НИЖЕ дна стакана (BASE_GROUND_DEPTH) — fade,
+// сползающий в зону базы, прячется под дно (чисто декорация).
 // Тело инферно: ВЫШЕ holy-fade — при подходе фронт перекрывает полосу
-// перехода к святой земле (иначе holy-fade закрашивает инферно у кромки),
+// перехода к дну стакана (иначе holy-fade закрашивает инферно у кромки),
 // НО ниже inferno-fade (108) — стык фронта не ломается
 const INFERNO_BODY_DEPTH = 107;
 const INFERNO_FADE_DEPTH = 108;
-// Святая земля зоны базы: выше обоих фэдов, ниже вспышек (300) и UI
-const HOLY_GROUND_DEPTH = 110;
-// Иконки базы (алтари, сила бога, подписи): выше святой земли, ниже монстров (850)
+// Дно стакана (зона базы, блоб-тайлы): выше обоих фэдов (108), ниже
+// вспышек (300), иконок базы (120) и препятствий (600)
+const BASE_GROUND_DEPTH = 110;
+// Иконки базы (алтари, сила бога, подписи): выше дна стакана (110), ниже монстров (850)
 const BASE_UI_DEPTH = 120;
 // Вспышки попаданий/укусов: выше фоновых тайлов (100/108/110), ниже
 // препятствий (600) — не обрезаются верхней кромкой зоны базы
@@ -80,10 +78,6 @@ export class GameScene extends Phaser.Scene {
   private penTile: Phaser.GameObjects.TileSprite | null = null;
   /** Fade-переход загона в поле (ground-inferno-fade), ряд сразу под загоном */
   private infernoFadeTile: Phaser.GameObjects.TileSprite | null = null;
-  /** Fade-переход поля в базу (ground-holy-fade), ряд над зоной базы */
-  private holyFadeTile: Phaser.GameObjects.TileSprite | null = null;
-  /** Текстура зоны базы (ground-holy) */
-  private holyTile: Phaser.GameObjects.TileSprite | null = null;
   /**
    * Тело инферно: ground-inferno, растёт вниз от низа загона по мере
    * потери HP базы. Когда фронт достигает базы — игра проиграна.
@@ -234,13 +228,12 @@ export class GameScene extends Phaser.Scene {
     // Если файла нет — процедурный атлас (ensureObstacleAtlas) как фолбэк.
     this.load.image('obstacle-blob-src', obstaclesBlobUrl);
     this.load.image('obstacle-blob-inferno-src', obstaclesBlobInfernoUrl);
-    // Текстура земли для заливки поля боя (загон и база — свои текстуры)
+    // Текстура земли для заливки поля боя (загон — своя текстура)
     this.load.image('ground-base', groundBaseUrl);
-    // Текстуры зон: загон (инферно) и база (святая), каждая с fade-переходом
+    // Текстуры зон: загон (инферно) с fade-переходом; дно стакана
+    // рендерится блоб-тайлами из obstacles-blob (см. renderObstacles)
     this.load.image('ground-inferno', groundInfernoUrl);
     this.load.image('ground-inferno-fade', groundInfernoFadeUrl);
-    this.load.image('ground-holy', groundHolyUrl);
-    this.load.image('ground-holy-fade', groundHolyFadeUrl);
   }
 
   create(): void {
@@ -510,43 +503,43 @@ export class GameScene extends Phaser.Scene {
     g.fillRect(z.x, z.y, z.width, penH);
 
     // 3.2. Заливка зон фоновыми текстурами (по одной tileSprite на зону).
-    // Вертикальный стек поля боя сверху вниз:
-    //   загон (inferno) → земля (ground_base, ВЕСЬ низ под загоном) →
-    //   база (holy)
-    // Fade-ряды НЕ занимают отдельные полосы: они рисуются ПОВЕРХ ground_base
-    // у границ (ground-inferno-fade сразу под загоном, ground-holy-fade над
-    // базой) и смешивают текстуры плавным переходом за счёт собственной альфы.
-    // Глубина: над фоном (0), fade (108) выше земли (100), под
-    // препятствиями (600), землёй-барьером (700), штрихами (800) и монстрами (850).
+    // Вертикальный стек сверху вниз:
+    //   земля (ground_base, ВЕСЬ экран — под всеми зонами, без чёрных
+    //   полос и фолбэк-заливок) → загон (inferno, поверх земли) →
+    //   дно стакана (блоб-тайлы, зона базы)
+    // Fade-ряд НЕ занимает отдельную полосу: рисуется ПОВЕРХ ground_base
+    // у границы (ground-inferno-fade сразу под загоном) и смешивает
+    // текстуры плавным переходом за счёт собственной альфы.
+    // Глубина: над фоном (0), земля (100), загон (101), fade (108) выше
+    // земли, под препятствиями (600), землёй-барьером (700), штрихами (800)
+    // и монстрами (850).
     if (this.penTile) { this.penTile.destroy(); this.penTile = null; }
     if (this.infernoBodyTile) { this.infernoBodyTile.destroy(); this.infernoBodyTile = null; }
     if (this.infernoFadeTile) { this.infernoFadeTile.destroy(); this.infernoFadeTile = null; }
     if (this.groundTile) { this.groundTile.destroy(); this.groundTile = null; }
-    if (this.holyFadeTile) { this.holyFadeTile.destroy(); this.holyFadeTile = null; }
-    if (this.holyTile) { this.holyTile.destroy(); this.holyTile = null; }
 
-    // Загон: непрозрачная «инферно»-земля
+    // Загон: непрозрачная «инферно»-земля ПОВЕРХ земляного фона, шириной
+    // МЕЖДУ бортами стакана — не залазит на стенки (борта рисуются выше)
+    const wallW = z.width / Math.max(1, Math.round(z.width / 16));
     this.penTile = this.add.tileSprite(
-      z.x + z.width / 2,
+      z.x + wallW + (z.width - wallW * 2) / 2,
       z.y + penH / 2,
-      z.width,
+      z.width - wallW * 2,
       penH,
       'ground-inferno'
     );
-    this.penTile.setDepth(GROUND_DEPTH);
+    this.penTile.setDepth(GROUND_DEPTH + 1);
 
-    // Земля: вся полоса ниже загона (ground_base, включая участки под fade)
-    const fieldH = z.height - penH;
-    if (fieldH >= 1) {
-      this.groundTile = this.add.tileSprite(
-        z.x + z.width / 2,
-        z.y + penH + fieldH / 2,
-        z.width,
-        fieldH,
-        'ground-base'
-      );
-      this.groundTile.setDepth(GROUND_DEPTH);
-    }
+    // Земля: ground_base на ВСЮ площадь экрана — под всеми зонами (поле,
+    // база, загон), чтобы нигде не торчали чёрные полосы/фолбэк-заливки
+    this.groundTile = this.add.tileSprite(
+      screenWidth / 2,
+      screenHeight / 2,
+      screenWidth,
+      screenHeight,
+      'ground-base'
+    );
+    this.groundTile.setDepth(GROUND_DEPTH);
 
     // Тело инферно: растёт вниз от низа загона по мере потери HP базы.
     // Origin (0.5, 0) — анкер на низ загона, высота меняется через setSize
@@ -574,19 +567,8 @@ export class GameScene extends Phaser.Scene {
     );
     this.infernoFadeTile.setDepth(INFERNO_FADE_DEPTH);
 
-    // Fade базы: ряд ПОВЕРХ земли у нижней границы поля боя (топ прозрачен —
-    // видна земля, к низу плотен и примыкает к «святой» земле базы).
-    this.holyFadeTile = this.add.tileSprite(
-      z.x + z.width / 2,
-      z.y + z.height - fadeH / 2,
-      z.width,
-      fadeH,
-      'ground-holy-fade'
-    );
-    this.holyFadeTile.setDepth(HOLY_FADE_DEPTH);
-
     // 4. Зона базы. Плоская заливка — фолбэк; поверх ляжет текстура
-    // ground-holy (создаётся ниже, ПОСЛЕ zoneGraphics; алтари рендерятся
+    // блоб-земли (создаётся ниже, ПОСЛЕ zoneGraphics; алтари рендерятся
     // поверх текстуры).
     g.fillStyle(GameScene.COLOR_BASE_BG, 1);
     g.fillRect(
@@ -598,21 +580,9 @@ export class GameScene extends Phaser.Scene {
 
     this.zoneGraphics = g;
 
-    // Зона базы: святая земля. Depth 0 (по умолчанию), создаётся сразу после
-    // zoneGraphics и ПЕРЕД алтарями (createElements): фон базы ниже алтарей.
-    // Overshoot +2px по высоте: на точной границе (roundPixels) WebGL
-    // оставляет 1px-полосу фолбэк-заливки у нижнего края экрана.
-    // Origin (0,0): не вылезает за игровую область по бокам.
-    this.holyTile = this.add.tileSprite(
-      this.baseZone.x,
-      this.baseZone.y,
-      this.baseZone.width,
-      this.baseZone.height + 2,
-      'ground-holy'
-    ).setOrigin(0, 0);
-    // Выше обоих фэдов: inferno-fade, сползающий в зону базы, прячется
-    // под святую землю (игра проиграна ровно в момент контакта)
-    this.holyTile.setDepth(HOLY_GROUND_DEPTH);
+    // Дно стакана рендерится в renderObstacles блоб-тайлами (зона базы
+    // «занята» в виртуальной сетке рендера — коллизии не меняются).
+    // Алтари и иконки базы создаются ПОЗЖЕ (createElements) — поверх.
 
     this.updateInfernoProgress();
   }
@@ -639,7 +609,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Fade едет за фронтом без ограничений: в самом конце спуска он заходит
-    // в зону базы и прячется под ground_holy (HOLY_GROUND_DEPTH > INFERNO_FADE_DEPTH).
+    // в зону базы и прячется под дно стакана (BASE_GROUND_DEPTH > INFERNO_FADE_DEPTH).
     // Фэйд — чисто декорация: проигрыш наступает по контакту ТЕЛА с базой.
     if (this.infernoFadeTile) {
       const fadeH = GameScene.FADE_H;
@@ -711,7 +681,7 @@ export class GameScene extends Phaser.Scene {
       this.godPower,
       () => { this.toggleSuperMode(); }
     );
-    // Иконки базы выше святой земли (HOLY_GROUND_DEPTH=110), ниже монстров (850)
+    // Иконки базы выше дна стакана (BASE_GROUND_DEPTH=110), ниже монстров (850)
     this.godIcon.setDepth(BASE_UI_DEPTH);
 
     // Пересоздаём алтари (при resize) — старые иконки уничтожаются
@@ -912,7 +882,11 @@ export class GameScene extends Phaser.Scene {
     const z = this.battlefieldZone;
     const margin = 8 * UI_SCALE;
     const penH = (GameScene.PEN_HEIGHT - 8) * UI_SCALE;
-    const w = z.width - margin * 2;
+    // Ширина МЕЖДУ бортами стакана (по клетке стены с каждой стороны):
+    // очередь не залазит на стенки
+    const wall = this.level.getCollisionField().cellSize;
+    const x0 = z.x + wall + margin;
+    const w = z.width - wall * 2 - margin * 2;
     const size = Math.max(4, this.enemySize * UI_SCALE);
     const cell = Math.max(1, size * 0.9);
     const cols = Math.max(1, Math.floor(w / cell));
@@ -927,7 +901,7 @@ export class GameScene extends Phaser.Scene {
       const cx = index % cols;
       const cy = Math.floor(index / cols);
       s.setPosition(
-        z.x + margin + cx * cell + cell / 2 + jx,
+        x0 + cx * cell + cell / 2 + jx,
         z.y + margin + cy * cell + cell / 2 + jy
       );
       return;
@@ -952,7 +926,7 @@ export class GameScene extends Phaser.Scene {
         const cx = Math.min(cols - 1, Math.floor(t * cols));
         const cy = rows - 1 - r; // r=0 — нижний ряд
         s.setPosition(
-          z.x + margin + cx * cell + cell / 2 + jx,
+          x0 + cx * cell + cell / 2 + jx,
           z.y + margin + cy * cell + cell / 2 + jy
         );
         return;
@@ -960,7 +934,7 @@ export class GameScene extends Phaser.Scene {
       acc += rowCaps[r];
     }
     // Фолбэк (не должно случаться): центр нижнего ряда
-    s.setPosition(z.x + margin + w / 2, z.y + margin + cell / 2);
+    s.setPosition(x0 + w / 2, z.y + margin + cell / 2);
   }
 
   private createEnemy(): void {
@@ -980,10 +954,11 @@ export class GameScene extends Phaser.Scene {
       this.spawnGateIdx = (this.spawnGateIdx + 1) % ents.length;
       const e = ents[this.spawnGateIdx];
       // На всю ширину входа, без отступов от его краёв.
-      // Клэмп = коридору движения физики (EDGE_MARGIN=10 + запас):
-      // иначе спавн у кромки телепортом слипается в колонну на стенке
+      // Клэмп = между бортами стакана (клетка стены + запас EDGE_MARGIN):
+      // иначе спавн у кромки попадает внутрь борта и телепортом слипается
       const localX = e.x + Phaser.Math.FloatBetween(-e.width / 2, e.width / 2);
-      x = zone.x + Phaser.Math.Clamp(localX, 14 * UI_SCALE, zone.width - 14 * UI_SCALE);
+      const wall = this.level?.getCollisionField().cellSize ?? 16;
+      x = zone.x + Phaser.Math.Clamp(localX, wall + 10 * UI_SCALE, zone.width - wall - 10 * UI_SCALE);
     } else {
       x = Phaser.Math.Between(zone.x + 20 * UI_SCALE, zone.x + zone.width - 20 * UI_SCALE);
     }
@@ -1177,11 +1152,30 @@ export class GameScene extends Phaser.Scene {
     const tileScale = cf.cellSize / frameSize;
     const group = this.add.group();
     const blocked = cf.blocked;
-    for (let cy = 0; cy < cf.rows; cy++) {
-      const row = cy * cf.cols;
-      for (let cx = 0; cx < cf.cols; cx++) {
-        if (blocked[row + cx] !== 1) continue;
-        const frame = frameIndexForCell(blocked, cf.cols, cf.rows, cx, cy);
+
+    // Виртуальная сетка РЕНДЕРА = поле боя + дно стакана (зона базы).
+    // База целиком «занята» только для отрисовки (сетка коллизий НЕ
+    // расширяется — монстры по-прежнему ходят по базе): нижний тайл
+    // стенок видит базу снизу и смыкается с ней бесшовно, а дно
+    // заливается блоб-тайлами из obstacles_blob.
+    const baseRows = Math.max(1, Math.ceil(this.baseZone.height / cf.cellSize));
+    const renderCols = cf.cols;
+    const renderRows = cf.rows + baseRows;
+    const renderBlocked = new Uint8Array(renderCols * renderRows);
+    renderBlocked.set(cf.blocked);
+    for (let cy = cf.rows; cy < renderRows; cy++) {
+      const row = cy * renderCols;
+      for (let cx = 0; cx < renderCols; cx++) {
+        renderBlocked[row + cx] = 1;
+      }
+    }
+
+    for (let cy = 0; cy < renderRows; cy++) {
+      const row = cy * renderCols;
+      for (let cx = 0; cx < renderCols; cx++) {
+        // Поле боя: только занятые клетки; дно стакана — все клетки
+        if (cy < cf.rows && renderBlocked[row + cx] !== 1) continue;
+        const frame = frameIndexForCell(renderBlocked, renderCols, renderRows, cx, cy);
         const s = this.add.image(
           ox + cx * cf.cellSize + half,
           oy + cy * cf.cellSize + half,
@@ -1189,7 +1183,9 @@ export class GameScene extends Phaser.Scene {
           frame
         );
         s.setScale(tileScale);
-        s.setDepth(OBSTACLE_DEPTH);
+        // Дно стакана — под иконками базы (BASE_GROUND_DEPTH), поле боя —
+        // в слое препятствий
+        s.setDepth(cy < cf.rows ? OBSTACLE_DEPTH : BASE_GROUND_DEPTH);
         group.add(s);
       }
     }
