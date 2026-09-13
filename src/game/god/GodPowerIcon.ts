@@ -88,7 +88,7 @@ export class GodPowerIcon {
       x,
       y + radius + fontPx(11),
       'СИЛА БОГА',
-      { font: `${fontPx(10)}px Arial`, color: '#cccccc' }
+      { font: `${fontPx(10)}px Arial`, color: '#6EA74D' }
     ).setOrigin(0.5);
 
     // Зона тапа чуть больше иконки — палец не должен попадать мимо

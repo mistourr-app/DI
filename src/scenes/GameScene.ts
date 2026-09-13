@@ -693,7 +693,7 @@ export class GameScene extends Phaser.Scene {
       // Название стихии под алтарём
       const nameLabel = this.add.text(elementX, elementY + elementRadius + 10 * UI_SCALE, element.name, {
         font: `${labelFontSize}px Arial`,
-        color: '#cccccc',
+        color: '#6EA74D',
         align: 'center'
       });
       nameLabel.setOrigin(0.5);
