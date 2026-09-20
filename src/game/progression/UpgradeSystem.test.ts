@@ -121,6 +121,34 @@ describe('UpgradeSystem', () => {
     expect(s.levelOf('capacity-fire')).toBe(0);
   });
 
+  it('resetAll стирает всё: души, уровни, пройденные (fresh start)', () => {
+    const s = freshSystem();
+    s.addSouls(2000);
+    s.buy('capacity-fire');
+    s.buy('gainPerKill-water');
+    s.completeLevel(3);
+    s.completeLevel(4);
+    s.resetAll();
+    expect(s.totalSouls).toBe(0);
+    expect(s.levelOf('capacity-fire')).toBe(0);
+    expect(s.levelOf('gainPerKill-water')).toBe(0);
+    expect(s.isCompleted(3)).toBe(false);
+    expect(s.isCompleted(4)).toBe(false);
+  });
+
+  it('resetAll переживает перезагрузку (state стёрт в хранилище)', () => {
+    const s = freshSystem();
+    s.addSouls(2000);
+    s.buy('capacity-fire');
+    s.completeLevel(2);
+    s.resetAll();
+
+    const s2 = new UpgradeSystem(makeCatalog());
+    expect(s2.totalSouls).toBe(0);
+    expect(s2.levelOf('capacity-fire')).toBe(0);
+    expect(s2.isCompleted(2)).toBe(false);
+  });
+
   it('сохраняет и загружает состояние (persistence)', () => {
     const s = freshSystem();
     s.addSouls(500);

@@ -2133,6 +2133,31 @@ this.scale.off('resize', this.handleResize, this);
     TuningStore.save(this.collectTuning());
   }
 
+  /** Полный сброс «fresh start»: стирает прокачку и тюнинг, восстанавливает
+   *  дефолтные значения и перезапускает игру с первого уровня. */
+  private resetAllProgress(): void {
+    // 1. Стираем мета-прогресс: души = 0, уровни = 0, пройденные уровни = ∅.
+    this.progression.resetAll();
+    // 2. GameConfig возвращается к базовым значениям баланса (level 0 из CSV)
+    this.applyAllProgression();
+    // 3. Поля, не покрытые каталогом прокачки: радиус штриха стихий — к дефолту
+    for (const k of ELEMENT_KEYS) {
+      GameConfig.elements[k].radius = 25;
+    }
+    // 4. Сценические поля тюнинга — дефолты первого уровня
+    this.currentLevel = 1;
+    this.spawnInterval = 5;
+    this.maxEnemiesOnScreen = 10000;
+    this.enemySize = 5;
+    this.genDensity = GameScene.levelDensity(1);
+    this.genBlobScale = GameScene.levelBlobScale(1);
+    // 5. Стираем сохранённый тюнинг (иначе applyStoredTuning вернёт перегруз)
+    TuningStore.clear();
+    // 6. Рестарт с первого уровня: новый seed, полная очистка поля и стейтов
+    this.restartLevel(true);
+    this.persistTuning();
+  }
+
   // --- Прокачка: полноэкранный экран ---
 
   /** Группы параметров по стихиям (порядок: Огонь, Вода, Земля, Воздух, Бог) */
@@ -2189,37 +2214,38 @@ this.scale.off('resize', this.handleResize, this);
       color: '#ffd700'
     }).setOrigin(0.5, 0));
 
-    // Кнопки сброса: прокачки (↺) и душ (↺) в правом верхнем углу окна прокачки
+    // Кнопка полного сброса «fresh start»: стирает прокачку, значения и
+    // отправляет на первый уровень. Справа сверху, прижата к краю окна
+    // (origin(1,0) — правый край никогда не вылезает за окно);
+    // если текст шире окна — кегль уменьшается, пока не впишется
     const btnY = gy + pad + fontPx(2);
     const btnPad = padPx(6);
-    const btnFont = `bold ${fontPx(13)}px Arial`;
     const btnBg = '#1a1f2e';
-    
-    // Кнопка сброса прокачки (возвращает души)
-    const resetBtn = this.add.text(gx + gw - pad, btnY, '↺ сбросить прокачку', {
-      font: btnFont,
-      color: '#555555',
-      backgroundColor: btnBg,
-      padding: { x: btnPad, y: padPx(2) }
-    }).setInteractive({ useHandCursor: true });
-    resetBtn.on('pointerdown', () => {
-      this.progression.reset();
-      this.applyAllProgression();
-      this.rebuildProgressionContent();
-    });
-    root.add(resetBtn);
-    
-    // Кнопка сброса душ (рядом, левее)
-    const soulsResetBtn = this.add.text(resetBtn.x - resetBtn.width - padPx(4), btnY, '↺ сбросить души', {
-      font: btnFont,
+    const maxBtnW = gw - pad * 2 - padPx(2);
+    let btnFont = 14;
+    let resetBtn = this.add.text(0, 0, '↺ Сбросить прогресс', {
+      font: `bold ${fontPx(btnFont)}px Arial`,
       color: '#ff6666',
       backgroundColor: btnBg,
       padding: { x: btnPad, y: padPx(2) }
-    }).setInteractive({ useHandCursor: true });
-    soulsResetBtn.on('pointerdown', () => { this.progression.resetSouls(); this.rebuildProgressionContent(); });
-    soulsResetBtn.on('pointerover', () => soulsResetBtn.setStyle({ color: '#ff8888' }));
-    soulsResetBtn.on('pointerout', () => soulsResetBtn.setStyle({ color: '#ff6666' }));
-    root.add(soulsResetBtn);
+    });
+    while (resetBtn.width > maxBtnW && btnFont > 8) {
+      btnFont--;
+      resetBtn.destroy();
+      resetBtn = this.add.text(0, 0, '↺ Сбросить прогресс', {
+        font: `bold ${fontPx(btnFont)}px Arial`,
+        color: '#ff6666',
+        backgroundColor: btnBg,
+        padding: { x: btnPad, y: padPx(2) }
+      });
+    }
+    resetBtn.setOrigin(1, 0).setPosition(gx + gw - pad, btnY)
+      .setInteractive({ useHandCursor: true });
+    resetBtn.on('pointerover', () => resetBtn.setStyle({ color: '#ff8888' }));
+    resetBtn.on('pointerout', () => resetBtn.setStyle({ color: '#ff6666' }));
+    resetBtn.on('pointerdown', () => this.resetAllProgress());
+
+    root.add(resetBtn);
 
     // --- Область списка (внутри игрового поля) ---
     const bottomH = fontPx(96);

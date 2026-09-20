@@ -321,6 +321,13 @@ export interface RemoveAgentMsg {
   id: number;
 }
 
+/** Полный сброс агентов воркера (смена уровня): очищает all слоты,
+ *  счётчики и аккумулятор. Поле/сетка остаются. После reset id
+ *  можно переиспользовать с нуля — состояние main обнуляется вместе */
+export interface ResetAgentsMsg {
+  type: 'reset_agents';
+}
+
 export interface StepMsg {
   type: 'step';
   dt: number;
@@ -355,6 +362,7 @@ export type WorkerCommand =
   | SetLevelMsg
   | AddAgentMsg
   | RemoveAgentMsg
+  | ResetAgentsMsg
   | StepMsg
   | SetParamsMsg
   | SetEarthMsg

@@ -49,9 +49,15 @@ const indexOfId = new Int32Array(MAX_AGENTS).fill(-1);
 const freeList = new Int32Array(MAX_AGENTS);
 let freeTop = 0;
 
-for (let s = MAX_AGENTS - 1; s >= 0; s--) {
-  freeList[freeTop++] = s;
+/** Перезаполняет стек свободных слотов (стартовая инициализация и reset_agents) */
+function refillFreeList(): void {
+  freeTop = 0;
+  for (let s = MAX_AGENTS - 1; s >= 0; s--) {
+    freeList[freeTop++] = s;
+  }
 }
+
+refillFreeList();
 
 // --- Конфигурация ---
 let field: CollisionField | null = null;
@@ -445,6 +451,28 @@ ctx.onmessage = (e: { data: unknown }) => {
       if (slot >= 0) {
         killSlot(slot);
       }
+      break;
+    }
+
+    case 'reset_agents': {
+      // Полный сброс состояния агентов (смена уровня): все слоты свободны,
+      // счётчики и аккумулятор обнулены. Поле/сетка и параметры сохраняются.
+      alive.fill(0);
+      idOfSlot.fill(-1);
+      indexOfId.fill(-1);
+      refillFreeList();
+      avoidDir.fill(0);
+      avoidFail.fill(0);
+      avoidSweep.fill(0);
+      avoidHover.fill(0);
+      wetRemain.fill(0);
+      driftX.fill(0);
+      driftY.fill(0);
+      stallCnt.fill(0);
+      bestY.fill(0);
+      accumulator = 0;
+      arrivedCount = 0;
+      attackCount = 0;
       break;
     }
 

@@ -4,8 +4,10 @@
 // и построение UpgradeDef[]. Сам CSV подключается в
 // upgradeCatalog.ts через Vite `?raw`; тесты используют инлайн-CSV.
 //
-// Формат CSV (разделитель ';', шапка в первой строке):
-//   title;key;costBase;maxLevel;v0;v1;...;v8;;group
+// Формат CSV — ГИБКИЙ: разделитель не важен (',' ';' '\t'
+// определяются по шапке), колонки привязываются к ИМЕНАМ шапки,
+// а не к номерам. Обязательные колонки: title, key, costBase,
+// costRatio, maxLevel; значения — колонки v0..vN; group — опция.
 // Десятичные допустимы и через ',' и через '.' (нормализуются).
 // ============================================================
 
@@ -74,47 +76,108 @@ const ELEMENT_BY_KEY: Record<string, ElementType> = {
 };
 
 /**
- * Парсинг CSV баланса.
- * - первая строка — шапка, пропускается;
- * - колонки: title, key, costBase, costRatio, maxLevel, v0..v8, (пустая), group;
+ * Парсер CSV баланса, устойчивый к формату.
+ * - первая строка — шапка: по ней определяется разделитель (','/';'/'\\t')
+ *   и раскладка колонок ПО ИМЕНАМ (порядок/лишние колонки не важны);
+ * - обязательные колонки: title, key, costBase, costRatio, maxLevel;
+ * - значения: все колонки v0..vN (порядок по шапке);
+ * - optional: group (по умолчанию 'economy');
  * - десятичные запятые -> точки; пустые значения пропускаются;
  * - maxLevel ограничивается числом заполненных значений − 1 (защита);
  * - пустые строки пропускаются.
  */
+
+type BalanceHeader = Partial<Record<'title'|'key'|'costBase'|'costRatio'|'maxLevel'|'group', number>>;
+
+/** Все кандидаты-разделители; победит тот, по которому шапка даёт больше
+ *  знакомых колонок (чтобы не спутать ',' в заголовках-типах). */
+const DELIMITERS = [',', ';', '\t'] as const;
+
+const KNOWN_HEADERS = new Set(['title', 'key', 'costbase', 'costratio', 'maxlevel', 'group']);
+
+/** Индексы колонок по именам шапки под конкретный разделитель */
+function mapHeaders(header: string, delim: string): BalanceHeader | null {
+  const cols = header.split(delim).map((c) => c.trim());
+  const out: BalanceHeader = {};
+  for (let i = 0; i < cols.length; i++) {
+    const name = cols[i].toLowerCase();
+    if (!out.title && name === 'title') out.title = i;
+    else if (!out.key && name === 'key') out.key = i;
+    else if (!out.costBase && name === 'costbase') out.costBase = i;
+    else if (!out.costRatio && name === 'costratio') out.costRatio = i;
+    else if (!out.maxLevel && name === 'maxlevel') out.maxLevel = i;
+    else if (!out.group && name === 'group') out.group = i;
+  }
+  if (out.title === undefined || out.key === undefined) return null;
+  return out;
+}
+
+function pickDelimiter(header: string): string {
+  let best = ',' as string;
+  let bestScore = -1;
+  for (const d of DELIMITERS) {
+    const score = header.split(d).map((c) => c.trim().toLowerCase())
+      .filter((c) => KNOWN_HEADERS.has(c)).length;
+    if (score > bestScore) {
+      best = d;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/** Парсинг числа: нормализация ',' -> '.' и trim */
+function toNumber(raw: string | undefined): number {
+  const s = (raw ?? '').trim().replace(',', '.');
+  if (!s) return NaN;
+  return Number(s);
+}
+
 export function parseBalance(csv: string): BalanceEntry[] {
   const lines = csv.split(/\r?\n/);
+  if (lines.length < 2) return [];
+
+  const delim = pickDelimiter(lines[0]);
+  const header = mapHeaders(lines[0], delim);
+  if (!header) return [];
+
+  // Индексы колонок значений v0..vN — в порядке появления в шапке
+  const valueIdxs: number[] = [];
+  const headCols = lines[0].split(delim);
+  for (let i = 0; i < headCols.length; i++) {
+    if (/^v\d+$/i.test(headCols[i].trim())) valueIdxs.push(i);
+  }
+
   const entries: BalanceEntry[] = [];
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    const cols = line.split(';');
-    const key = cols[1]?.trim();
+    const cols = line.split(delim);
+    const key = cols[header.key!]?.trim();
     if (!key) continue;
 
     const values: number[] = [];
-    for (let v = 5; v < 14; v++) {
-      const raw = cols[v]?.trim();
-      if (!raw) continue;
-      const num = Number(raw.replace(',', '.'));
+    for (const vi of valueIdxs) {
+      const num = toNumber(cols[vi]);
       if (!Number.isNaN(num)) values.push(num);
     }
     if (values.length === 0) continue;
 
-    const declared = Number(cols[4]?.trim().replace(',', '.'));
+    const declared = toNumber(header.maxLevel !== undefined ? cols[header.maxLevel] : undefined);
     const maxLevel = Number.isFinite(declared)
       ? Math.max(0, Math.min(declared, values.length - 1))
       : values.length - 1;
 
-    const ratio = Number(cols[3]?.trim().replace(',', '.'));
+    const ratio = toNumber(header.costRatio !== undefined ? cols[header.costRatio] : undefined);
     const costRatio = Number.isFinite(ratio) && ratio > 0 ? ratio : 1.6;
-    const group = (cols[15]?.trim() || 'economy') as UpgradeGroup;
+    const group = (header.group !== undefined && cols[header.group]?.trim()) || 'economy';
 
     entries.push({
       key,
-      title: cols[0]?.trim() || key,
-      group,
-      costBase: Number(cols[2]?.trim().replace(',', '.')) || 0,
+      title: (header.title !== undefined && cols[header.title]?.trim()) || key,
+      group: group as UpgradeGroup,
+      costBase: toNumber(header.costBase !== undefined ? cols[header.costBase] : undefined) || 0,
       costRatio,
       maxLevel,
       values

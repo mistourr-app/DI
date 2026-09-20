@@ -106,6 +106,20 @@ export class UpgradeSystem {
     this.save();
   }
 
+  /**
+   * Полный сброс «fresh start»: души = 0, уровни = 0, пройденные уровни = ∅.
+   * В отличие от reset() НЕ возвращает вложенные души — это именно стирание
+   * всего прогресса (не откат с возвратом средств).
+   */
+  resetAll(): void {
+    this.souls = 0;
+    for (const key of Object.keys(this.levels)) {
+      this.levels[key] = 0;
+    }
+    this.completed.clear();
+    this.save();
+  }
+
   /** Сумма душ, возвращаемых при полном сбросе (все вложенные) */
   spentSouls(): number {
     let total = 0;

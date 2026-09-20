@@ -1,5 +1,7 @@
 import { parseBalance, buildUpgradeDefs, valueAt, displayValue, upgradeCost } from './balance';
 import { GameConfig } from '../config/GameConfig';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 /** Полное содержимое docs/balance_1.csv (рабочий баланс) */
 const BALANCE_CSV = [
@@ -84,6 +86,46 @@ describe('parseBalance', () => {
     const entries = parseBalance('title;key;costBase;costRatio;maxLevel;v0;;group\n\nTest;test.y;50;1.6;1;1;2;;effect\n');
     expect(entries.length).toBe(1);
     expect(entries[0].key).toBe('test.y');
+  });
+
+  it('парсит CSV в формате файла на диске (разделитель "," без пустой колонки)', () => {
+    const csv = [
+      'title,key,costBase,costRatio,maxLevel,v0,v1,v2,v3,v4,v5,v6,v7,v8,group',
+      'Air: mana capacity,capacity-air,75,1.6,8,20.00,25.00,30.00,35.00,40.00,45.00,50.00,55.00,60.00,economy',
+      'God: kills per lightning,god.lightning,600,1.6,5,1.00,2.00,3.00,4.00,5.00,god',
+      'Earth: cell durability,earth.bites,450,1.6,5,5,9,13,16,20,-,-,-,-,effect'
+    ].join('\n');
+    const byKey = Object.fromEntries(parseBalance(csv).map((e) => [e.key, e]));
+    expect(Object.keys(byKey).sort()).toEqual(['capacity-air', 'earth.bites', 'god.lightning']);
+    expect(byKey['capacity-air'].costBase).toBe(75);
+    expect(byKey['capacity-air'].values).toEqual([20, 25, 30, 35, 40, 45, 50, 55, 60]);
+    expect(byKey['capacity-air'].group).toBe('economy');
+    expect(byKey['god.lightning'].maxLevel).toBe(4);
+    expect(byKey['earth.bites'].group).toBe('effect');
+  });
+
+  it('устойчив к произвольному порядку колонок и табам как разделителю', () => {
+    const csv = 'key\ttitle\tmaxLevel\tcostBase\tcostRatio\tgroup\tv0\tv1\n' +
+      'test.z\tX\t3\t50\t1.5\teffect\t1\t2\n';
+    const entries = parseBalance(csv);
+    expect(entries.length).toBe(1);
+    expect(entries[0].key).toBe('test.z');
+    expect(entries[0].group).toBe('effect');
+    expect(entries[0].costRatio).toBe(1.5);
+    expect(entries[0].maxLevel).toBe(1);
+    expect(entries[0].values).toEqual([1, 2]);
+  });
+
+  it('читает реальный docs/balance_1.csv с диска (формат "," и плейсхолдеры "-")', () => {
+    // Разделитель и плейсхолдеры не должны ломать парсинг рабочего файла
+    const csv = readFileSync(resolve(__dirname, '../../../docs/balance_1.csv'), 'utf8');
+    const entries = parseBalance(csv);
+    expect(entries.length).toBe(25);
+    const byKey = Object.fromEntries(entries.map((e) => [e.key, e]));
+    expect(byKey['capacity-fire'].values).toEqual([20, 25, 30, 35, 40, 45, 50, 55, 60]);
+    expect(byKey['earth.bites'].values).toEqual([5, 9, 13, 16, 20]);
+    expect(byKey['earth.bites'].group).toBe('effect');
+    expect(byKey['earth.bites'].maxLevel).toBe(4);
   });
 });
 

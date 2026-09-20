@@ -102,12 +102,22 @@ rAF:
 | main→w | `set_level` | cols, rows, cellSize, blocked(Uint8Array) | blocked ✅ |
 | main→w | `add` | id, x, y, vx, vy, radius | — |
 | main→w | `remove` | id | — |
+| main→w | `reset_agents` | — (полный сброс агентов воркера) | — |
 | main→w | `step` | dt | out-буфер позиций ✅ |
 | main→w | `params` | targetSpeed, enemyRadius, … | — |
 | w→main | `ready` | — | — |
 | w→main | `frame` | count, px(Float32Array), py(Float32Array), arrived(Int32Array) | все три ✅ |
 
 Буферы позиций возвращаются main'ом воркеру вместе со следующим `step` (пул ≥2 буферов на стороне main).
+
+**Сброс физики (починен 20.09.2026, см. `docs/perfomance_bug` п.1):** на смене уровня
+физика толпы живёт дольше состояния main (`spriteById`) → «мёртвые» агенты копятся, ID
+переиспользуются раньше подтверждения удаления (чужие `arrived`/`attacks`, зависшие монстры,
+просадка FPS). Команда `reset_agents` чистит в воркере `alive/idOfSlot/indexOfId/freeList/
+avoidDir` и счётчики, а `FluidSimulationController.resetAll()` дополнительно обнуляет пул
+свободных ID на main (`freeIds`/`idsIssued`) — обе стороны становятся консистентными с нуля.
+ВАЖНО: `resetAll()` должен вызываться ДО отправки нового `set_level` (в `GameScene` пока
+не подключён — точка «порядок уровня» в `docs/perfomance_bug` п.4/5).
 
 ### 3.4. Spatial hash
 - Ячейка ≈ радиус взаимодействия (~24px), отдельная от коллизионной сетки 16px.
@@ -275,6 +285,7 @@ scenes/GameScene.ts                   # Контроллер вместо update
 
 | Дата | Изменение | Автор |
 |------|-----------|-------|
+| 20.09.2026 | **Фикс рассинхрона при смене уровня (`perfomance_bug` п.1):** команда `reset_agents` в протоколе и воркере (сброс `alive`/`idOfSlot`/`indexOfId`/`refillFreeList`/`avoidDir`), метод `FluidSimulationController.resetAll()` (сброс ID-пула main). В GameScene ещё не подключён — порядок уровня (удалить монстров → `reset_agents` → `generateLevel`) в бэклоге | @ox-alpha |
 | 22.08.2026 | **Фикс потери прибытий**: при 2+ подшагах за кадр (30fps мобильные) `arrivedCount = integrate()` перезаписывал счётчик — спрайты зависали у базы, HP недоотчитывался. Теперь накопление за все подшаги. Ёмкость `MAX_AGENTS` 4096→20000; переработка id в контроллере (после 4096 суммарных спавнов физика переставала принимать агентов). Лимит экрана до 20000, шаг слайдера уровня адаптивный (до 100k). 3.3 (fast-forward) отклонена | @ox-alpha |
 | 22.08.2026 | HiDPI-рендер (канвас в физических px, `uiScale.ts`: UI_SCALE/TEXT_BOOST/fontPx/padPx); TRAP_STREAK 6→24 (давка в плотной толпе без карабканья); фикс фантомной полосы справа (`blockedAt` × widthPx); клэмп спавна в коридор ±14px; погребённые регенерацией телепортируются на спавн; плотность слайдера до 2.0; дефолты генерации 1.1/×0.3; CI ускорен (~2 мин, skip puppeteer) | @ox-alpha |
 | 22.08.2026 | Фикс «монстры плывут вверх сквозь блобы у правого края»: подъём с коллизией (`climbStep`), порог всплытия `TRAP_STREAK=6`, `CollisionField.widthPx` (реальная ширина поля вместо cols*cell). Генерация: эрозия свободного места 3×3 (проходы ≥48px), резка кластеров >12% площади крестом коридоров. Валидация: 20 seed'ов × 300 = 100%, перф 0.59 мс/шаг | @ox-alpha |

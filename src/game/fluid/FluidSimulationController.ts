@@ -136,6 +136,18 @@ export class FluidSimulationController {
     this.freeIds.push(id);
   }
 
+  /**
+   * Полный сброс физики толпы (смена уровня): воркер очищает все слоты
+   * агентов, main обнуляет пул id — состояние обеих сторон становится
+   * консистентным с нуля. Вызовется до отправки нового set_level/add.
+   */
+  resetAll(): void {
+    if (!this.isWorkerMode) return;
+    this.post({ type: 'reset_agents' });
+    this.freeIds = [];
+    this.idsIssued = 0;
+  }
+
   setParams(params: FluidParams): void {
     if (!this.isWorkerMode) return;
     this.post({ type: 'params', params });
