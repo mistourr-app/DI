@@ -4,6 +4,11 @@ import { computeGameArea, type GameArea } from '../game/config/layout';
 import { createSoulsCounter, type SoulsCounter } from '../game/ui/soulsCounter';
 import { progression } from '../game/progression/progressionStore';
 import { upgradeDefs, valueAt, displayValue, type UpgradeDef } from '../game/progression/upgradeCatalog';
+import {
+  ELEMENT_UNLOCK_LEVELS,
+  isElementUnlocked,
+  type UnlockableKey
+} from '../game/config/elementUnlocks';
 import type { GameScene } from './GameScene';
 
 /**
@@ -242,12 +247,17 @@ export class UpgradeScene extends Phaser.Scene {
     for (const group of this.buildGroups()) {
       const headerText = this.add.text(this.gameArea.x + pad, y + padPx(2), group.name, {
         font: `bold ${fontPx(14)}px Arial`,
-        color: '#ffd700'
+        color: group.locked ? '#888888' : '#ffd700'
       });
       content.add(headerText);
       y += Math.max(groupH, headerText.height + padPx(8));
-      for (const def of group.defs) {
-        y += this.renderRow(content, def, y, viewportW, pad);
+      if (group.locked) {
+        // Закрытая стихия: вместо строк покупки — заглушка (ELEMENT_UNLOCKS.md)
+        y += this.renderLockedRow(content, group.unlockLevel, y, viewportW, pad);
+      } else {
+        for (const def of group.defs) {
+          y += this.renderRow(content, def, y, viewportW, pad);
+        }
       }
       y += fontPx(8);
     }
@@ -261,7 +271,12 @@ export class UpgradeScene extends Phaser.Scene {
   }
 
   /** Группы параметров по стихиям (порядок: Огонь, Вода, Земля, Воздух, Бог) */
-  private buildGroups(): Array<{ name: string; defs: UpgradeDef[] }> {
+  private buildGroups(): Array<{
+    name: string;
+    defs: UpgradeDef[];
+    locked: boolean;
+    unlockLevel: number;
+  }> {
     const byEl: Record<string, UpgradeDef[]> = {};
     for (const d of upgradeDefs) {
       const k = d.element ?? 'god';
@@ -274,10 +289,36 @@ export class UpgradeScene extends Phaser.Scene {
       air: '💨 Воздух',
       god: '⚡ Сила бога'
     };
-    return ['fire', 'water', 'earth', 'air', 'god'].map((k) => ({
+    const maxLevel = progression.maxLevelReached;
+    return (['fire', 'water', 'earth', 'air', 'god'] as UnlockableKey[]).map((k) => ({
       name: nameMap[k],
-      defs: byEl[k] ?? []
+      defs: byEl[k] ?? [],
+      locked: !isElementUnlocked(k, maxLevel),
+      unlockLevel: ELEMENT_UNLOCK_LEVELS[k]
     }));
+  }
+
+  /** Строка-заглушка закрытой стихии: «🔒 Откроется на Lvl. N». Возвращает высоту */
+  private renderLockedRow(
+    container: Phaser.GameObjects.Container,
+    unlockLevel: number,
+    y: number,
+    viewportW: number,
+    pad: number
+  ): number {
+    const rowH = fontPx(28);
+    const text = this.add.text(
+      this.gameArea.x + pad,
+      y + padPx(4),
+      `🔒 Откроется на Lvl. ${unlockLevel}`,
+      {
+        font: `${fontPx(12)}px Arial`,
+        color: '#888888',
+        wordWrap: { width: viewportW - pad * 2 }
+      }
+    );
+    container.add(text);
+    return Math.max(rowH, text.height + padPx(6));
   }
 
   /** Одна строка параметра: название · значение → следующее · [КУПИТЬ].

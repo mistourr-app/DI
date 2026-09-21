@@ -3,6 +3,7 @@ import { LevelGenerator } from '../game/generation/LevelGenerator';
 import { FluidSimulationController, type FrameInfo } from '../game/fluid/FluidSimulationController';
 import { MAX_AGENTS, OUT_STRIDE, type FluidParams } from '../game/fluid/fluidProtocol';
 import { GameConfig, type ElementType } from '../game/config/GameConfig';
+import { isElementUnlocked, unlockLabel } from '../game/config/elementUnlocks';
 import { UI_SCALE, fontPx, padPx } from '../game/config/uiScale';
 import { GodPowerSystem } from '../game/god/GodPowerSystem';
 import { GodPowerIcon } from '../game/god/GodPowerIcon';
@@ -67,6 +68,16 @@ const HIT_EFFECT_DEPTH = 300;
 const OBSTACLE_DEPTH = 600;
 // Размер тайла градиентной маски (размытие кромки фронта), px
 const FEATHER_TILE = 16;
+
+/** Отображение алтарей стихий: эмодзи + названия (ELEMENT_UNLOCKS.md) */
+const ELEMENT_UI: Record<ElementType, { emoji: string; name: string }> = {
+  fire: { emoji: '🔥', name: 'Огонь' },
+  water: { emoji: '💧', name: 'Вода' },
+  earth: { emoji: '🌍', name: 'Земля' },
+  air: { emoji: '💨', name: 'Воздух' }
+};
+/** Подпись иконки силы бога в открытом состоянии */
+const GOD_POWER_LABEL = 'СИЛА БОГА';
 
 export class GameScene extends Phaser.Scene {
   private enemies!: Phaser.GameObjects.Group;
@@ -145,6 +156,8 @@ export class GameScene extends Phaser.Scene {
   private altars = new Map<ElementType, ElementAltarIcon>();
   /** Подписи стихий под алтарями (пересоздаются вместе с алтарями) */
   private elementLabels: Phaser.GameObjects.Text[] = [];
+  /** Подпись по ключу стихии — для обновления «Lvl. N»/название при разлочке */
+  private elementLabelByKey = new Map<ElementType, Phaser.GameObjects.Text>();
   /** Земля-барьер (Итерация 2): ячейки земли, прогрызаемые монстрами */
   private earthBarrier!: EarthBarrierSystem;
   /** Эффекты стихий (Итерация 4): горение/замедление/отброс по зонам штриха */
@@ -299,6 +312,10 @@ export class GameScene extends Phaser.Scene {
     // Мета-прокачка применяется ПОСЛЕ восстановления тюнинга: значения из
     // уровней прокачки — авторитетный источник для качаемых полей
     this.applyAllProgression();
+
+    // Разлочка стихий по максимальному достигнутому уровню (ELEMENT_UNLOCKS.md):
+    // подписи/замки могли измениться после recordMaxLevel выше
+    this.syncElementUnlocks();
 
     // Точка отсчёта «душ за забег» для бейджа на поражении
     this.soulsRunStart = progression.totalSouls;
@@ -697,10 +714,10 @@ export class GameScene extends Phaser.Scene {
 
     // Алтари стихий в ряд (центральный слот — иконка супер силы бога)
     const elements: Array<{ key: ElementType; offset: number; emoji: string; name: string }> = [
-      { key: 'fire', offset: -2, emoji: '🔥', name: 'Огонь' },
-      { key: 'water', offset: -1, emoji: '💧', name: 'Вода' },
-      { key: 'earth', offset: 1, emoji: '🌍', name: 'Земля' },
-      { key: 'air', offset: 2, emoji: '💨', name: 'Воздух' }
+      { key: 'fire', offset: -2, emoji: ELEMENT_UI.fire.emoji, name: ELEMENT_UI.fire.name },
+      { key: 'water', offset: -1, emoji: ELEMENT_UI.water.emoji, name: ELEMENT_UI.water.name },
+      { key: 'earth', offset: 1, emoji: ELEMENT_UI.earth.emoji, name: ELEMENT_UI.earth.name },
+      { key: 'air', offset: 2, emoji: ELEMENT_UI.air.emoji, name: ELEMENT_UI.air.name }
     ];
 
     // Адаптивный размер элементов в зависимости от ширины зоны
@@ -730,21 +747,29 @@ export class GameScene extends Phaser.Scene {
     this.altars.clear();
     for (const l of this.elementLabels) l.destroy();
     this.elementLabels = [];
+    this.elementLabelByKey.clear();
 
     elements.forEach(element => {
       const elementX = centerX + (element.offset * elementSpacing);
       const elementY = centerY;
       const cfg = GameConfig.elements[element.key];
+      const unlocked = isElementUnlocked(element.key, progression.maxLevelReached);
 
-      // Название стихии под алтарём
-      const nameLabel = this.add.text(elementX, elementY + elementRadius + 10 * UI_SCALE, element.name, {
-        font: `${labelFontSize}px Arial`,
-        color: '#6EA74D',
-        align: 'center'
-      });
+      // Название стихии под алтарём; у закрытой — «Lvl. N» (ELEMENT_UNLOCKS.md)
+      const nameLabel = this.add.text(
+        elementX,
+        elementY + elementRadius + 10 * UI_SCALE,
+        unlocked ? element.name : unlockLabel(element.key),
+        {
+          font: `${labelFontSize}px Arial`,
+          color: '#6EA74D',
+          align: 'center'
+        }
+      );
       nameLabel.setOrigin(0.5);
       nameLabel.setDepth(BASE_UI_DEPTH);
       this.elementLabels.push(nameLabel);
+      this.elementLabelByKey.set(element.key, nameLabel);
 
       // Алтарь: круг, заливка маны цветом стихии снизу вверх (как у силы бога)
       const altar = new ElementAltarIcon(this, elementX, elementY, elementRadius, {
@@ -755,6 +780,8 @@ export class GameScene extends Phaser.Scene {
         canUse: () => this.elementMana.canUse(element.key),
         isSelected: () => this.elementMana.armed === element.key,
         onToggle: () => {
+          // Закрытая стихия не выбирается (маны у неё нет в любом случае)
+          if (!isElementUnlocked(element.key, progression.maxLevelReached)) return;
           if (this.elementMana.armed === element.key) {
             this.elementMana.disarm();
           } else {
@@ -768,12 +795,37 @@ export class GameScene extends Phaser.Scene {
       altar.setDepth(BASE_UI_DEPTH);
     });
 
+    this.syncElementUnlocks();
     this.refreshAltarBars();
   }
 
   /** Перерисовка алтарей: заливка маны + подсветка выбранного (событийно) */
   private refreshAltarBars(): void {
     this.altars.forEach(a => a.redraw());
+  }
+
+  /**
+   * Синхронизация прогрессии стихий (ELEMENT_UNLOCKS.md): закрытые стихии
+   * не копят ману и не выбираются, у иконки силы бога — «Lvl. 10» до
+   * открытия. Подписи под алтарями: «Lvl. N» / название.
+   */
+  private syncElementUnlocks(): void {
+    const maxLevel = progression.maxLevelReached;
+    const locked: ElementType[] = [];
+    for (const key of ELEMENT_KEYS) {
+      if (!isElementUnlocked(key, maxLevel)) locked.push(key);
+      const label = this.elementLabelByKey.get(key);
+      if (label) {
+        label.setText(isElementUnlocked(key, maxLevel) ? ELEMENT_UI[key].name : unlockLabel(key));
+      }
+    }
+    this.elementMana.setLocked(locked);
+
+    const godUnlocked = isElementUnlocked('god', maxLevel);
+    this.godPower.setLocked(!godUnlocked);
+    this.godIcon?.setLocked(!godUnlocked, godUnlocked ? GOD_POWER_LABEL : unlockLabel('god'));
+
+    this.refreshAltarBars();
   }
 
   /**
@@ -2247,6 +2299,8 @@ export class GameScene extends Phaser.Scene {
     if (snap && typeof snap.currentLevel === 'number') {
       this.currentLevel = Phaser.Math.Clamp(Math.round(snap.currentLevel), 1, GameScene.MAX_LEVEL);
     }
+    // Достигнутый уровень запоминается как максимум — разлочка стихий персистентна
+    progression.recordMaxLevel(this.currentLevel);
     // Базовые плотность/размер структур уровня применяются ВСЕГДА (в т.ч.
     // на чистой установке без снимка) — иначе остались бы дефолты полей.
     // Оверрайды поп-апа из снимка ложатся поверх них ниже.
@@ -2420,6 +2474,8 @@ export class GameScene extends Phaser.Scene {
   /** Выбор уровня в поп-апе: перезапуск с указанного уровня */
   private setLevel(level: number): void {
     this.currentLevel = Phaser.Math.Clamp(level, 1, GameScene.MAX_LEVEL);
+    // Достижение уровня открывает стихии (персистентно, ELEMENT_UNLOCKS.md)
+    progression.recordMaxLevel(this.currentLevel);
     // Новый уровень задаёт свои базовые плотность и размер структур
     // (оверрайды поп-апа сбрасываются только при смене уровня, не при рестартах)
     this.applyLevelGenerationSettings();
@@ -2504,7 +2560,8 @@ export class GameScene extends Phaser.Scene {
     // Мана стихий и нарисованные слои тоже не переносятся между уровнями
     this.elementMana.reset();
     this.elementDrawer.clearPersistent();
-    this.refreshAltarBars();
+    // Замки/подписи стихий по актуальному максимальному уровню
+    this.syncElementUnlocks();
     this.victoryShown = false;
     this.gameOverShown = false;
     this.showLevelBanner();
@@ -2535,6 +2592,8 @@ export class GameScene extends Phaser.Scene {
 
   /** Тап по иконке: включить/отменить режим супер силы (ГДД 2.5) */
   private toggleSuperMode(): void {
+    // Супер-заряд закрыт до 10 уровня забега (ELEMENT_UNLOCKS.md)
+    if (this.godPower.isLocked) return;
     if (this.godPower.isArmed) {
       this.godPower.disarm();
     } else {

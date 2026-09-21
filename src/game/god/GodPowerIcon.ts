@@ -47,6 +47,8 @@ export class GodPowerIcon {
   private pulseTweens: Phaser.Tweens.Tween[] = [];
   private flashTimer: Phaser.Time.TimerEvent | null = null;
   private flashMode: FlashMode = 'none';
+  /** Супер-заряд закрыт (до 10 уровня забега): подпись «Lvl. N», без зарядки */
+  private locked = false;
 
   constructor(
     scene: Phaser.Scene,
@@ -106,6 +108,16 @@ export class GodPowerIcon {
     this.refreshState();
   }
 
+  /**
+   * Закрыть/открыть супер-заряд (ELEMENT_UNLOCKS.md). При закрытии подпись
+   * меняется на «Lvl. N», заливка/пульс/вспышки отключаются.
+   */
+  setLocked(locked: boolean, label: string): void {
+    this.locked = locked;
+    this.label.setText(label);
+    this.redraw();
+  }
+
   /** Глубина иконки: применяется ко всем частям, подписи и зоне тапа */
   setDepth(depth: number): void {
     this.zone.setDepth(depth);
@@ -135,6 +147,7 @@ export class GodPowerIcon {
     const g = this.fill;
     const r = Math.max(0, this.radius - 2 * UI_SCALE); // внутри кольца
     g.clear();
+    if (this.locked) return;
     const p = this.system.progress;
     if (p <= 0 || r <= 0) return;
 
@@ -162,7 +175,10 @@ export class GodPowerIcon {
     const charged = this.system.isCharged;
 
     // --- Иконка-молния: бледная на пустом, яркая на заряженном ---
-    if (armed) {
+    if (this.locked) {
+      this.bolt.setColor('#ffffff');
+      this.bolt.setAlpha(0.28);
+    } else if (armed) {
       this.bolt.setColor('#ffffff');
       this.bolt.setAlpha(1);
     } else if (charged) {
@@ -177,15 +193,20 @@ export class GodPowerIcon {
     const ringColor = armed ? COLOR_RING_ARMED : charged ? COLOR_RING_CHARGED : COLOR_RING_DIM;
     const ringWidth = (armed ? 3 : 2) * UI_SCALE;
     this.ring.setStrokeStyle(ringWidth, ringColor);
-    this.ring.setAlpha(1);
+    this.ring.setAlpha(this.locked ? 0.35 : 1);
 
     // --- Свечение: очень яркое только в режиме выбранной силы ---
-    this.drawGlow(armed);
+    this.drawGlow(armed && !this.locked);
 
     // --- Пульс и масштаб ---
     this.stopPulses();
     this.scene.tweens.killTweensOf(this.parts);
     this.setScale(1);
+
+    if (this.locked) {
+      this.setFlashes('none');
+      return;
+    }
 
     if (armed) {
       // Кнопка увеличивается и пульсирует сильнее

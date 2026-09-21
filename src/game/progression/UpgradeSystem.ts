@@ -15,6 +15,8 @@ export interface ProgressionSave {
   souls: number;
   levels: Record<string, number>;
   completedLevels: number[];
+  /** Максимальный достигнутый уровень забега — источник разлочки стихий (ELEMENT_UNLOCKS.md) */
+  maxLevelReached: number;
 }
 
 const STORAGE_KEY = 'fluid-crowd-defense.progression.v1';
@@ -24,6 +26,7 @@ export class UpgradeSystem {
   private souls = 0;
   private levels: Record<string, number> = {};
   private completed = new Set<number>();
+  private maxLevel = 0;
   /** Есть ли несохранённые изменения (души, начисленные addSouls) */
   private dirty = false;
 
@@ -54,6 +57,20 @@ export class UpgradeSystem {
 
   isCompleted(level: number): boolean {
     return this.completed.has(level);
+  }
+
+  /** Максимальный достигнутый уровень забега (разлочка стихий) */
+  get maxLevelReached(): number {
+    return this.maxLevel;
+  }
+
+  /** Запомнить достигнутый уровень забега (не уменьшается) */
+  recordMaxLevel(level: number): boolean {
+    const v = Math.max(0, Math.round(level));
+    if (v <= this.maxLevel) return false;
+    this.maxLevel = v;
+    this.save();
+    return true;
   }
 
   /** Стоимость следующего уровня параметра, либо null на максимуме */
@@ -101,12 +118,14 @@ export class UpgradeSystem {
    * Сброс всех уровней прокачки с ПОЛНЫМ возвратом душ за вложенное
    * (PROGRESSION §8: souls += Σ spent(level) + обнуление уровней).
    * Пройденные уровни не отнимаются — награда за уровень не теряется.
+   * Разлочка стихий сбрасывается: maxLevelReached = 0 (ELEMENT_UNLOCKS.md).
    */
   reset(): void {
     this.souls += this.spentSouls();
     for (const key of Object.keys(this.levels)) {
       this.levels[key] = 0;
     }
+    this.maxLevel = 0;
     this.save();
   }
 
@@ -127,6 +146,7 @@ export class UpgradeSystem {
       this.levels[key] = 0;
     }
     this.completed.clear();
+    this.maxLevel = 0;
     this.save();
   }
 
@@ -163,6 +183,9 @@ export class UpgradeSystem {
           if (typeof l === 'number') this.completed.add(l);
         }
       }
+      if (typeof snap.maxLevelReached === 'number') {
+        this.maxLevel = Math.max(0, Math.round(snap.maxLevelReached));
+      }
     } catch {
       // приватный режим / повреждённые данные — стартуем с нуля
     }
@@ -173,7 +196,8 @@ export class UpgradeSystem {
       const snap: ProgressionSave = {
         souls: this.souls,
         levels: { ...this.levels },
-        completedLevels: Array.from(this.completed)
+        completedLevels: Array.from(this.completed),
+        maxLevelReached: this.maxLevel
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snap));
       this.dirty = false;

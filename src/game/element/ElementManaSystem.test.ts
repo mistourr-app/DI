@@ -116,4 +116,46 @@ describe('ElementManaSystem', () => {
     expect(m.manaOf('air')).toBeLessThanOrEqual(1);
     expect(m.armed).toBeNull();
   });
+
+  it('закрытая стихия не копит ману и недоступна для выбора (ELEMENT_UNLOCKS)', () => {
+    const m = new ElementManaSystem(makeBalance());
+    m.setLocked(['air', 'water']);
+
+    expect(m.isLocked('air')).toBe(true);
+    expect(m.isLocked('fire')).toBe(false);
+
+    m.gainFromKills(1000);
+    expect(m.manaOf('air')).toBe(0);
+    expect(m.manaOf('water')).toBe(0);
+    expect(m.manaOf('fire')).toBeGreaterThan(0);
+
+    expect(m.canUse('air')).toBe(false);
+    expect(m.arm('air')).toBe(false);
+    expect(m.armed).toBeNull();
+    expect(m.spend('air', 1)).toBe(false);
+  });
+
+  it('открытие стихии возобновляет накопление и выбор', () => {
+    const m = new ElementManaSystem(makeBalance());
+    m.setLocked(['fire']);
+    m.gainFromKills(1000);
+    expect(m.manaOf('fire')).toBe(0);
+
+    m.setLocked([]);
+    m.gainFromKills(1000);
+    expect(m.manaOf('fire')).toBeGreaterThan(0);
+    expect(m.arm('fire')).toBe(true);
+    expect(m.armed).toBe('fire');
+  });
+
+  it('setLocked снимает выбор с только что закрытой стихии', () => {
+    const m = new ElementManaSystem(makeBalance());
+    const cost = GameConfig.elements.earth.costPerUse;
+    const gain = GameConfig.elements.earth.gainPerKill;
+    m.gainFromKills(Math.ceil(cost / gain));
+    expect(m.arm('earth')).toBe(true);
+
+    m.setLocked(['earth']);
+    expect(m.armed).toBeNull();
+  });
 });

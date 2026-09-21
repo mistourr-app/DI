@@ -21,6 +21,8 @@ export class GodPowerSystem {
   private kills: number = 0;
   /** Режим супер силы активирован (следующий тап по полю = супер атака) */
   private armedFlag: boolean = false;
+  /** Супер-заряд закрыт до 10 уровня забега (ELEMENT_UNLOCKS.md): не копится */
+  private lockedFlag: boolean = false;
 
   constructor(balance: GodPowerBalance) {
     this.balance = balance;
@@ -39,6 +41,20 @@ export class GodPowerSystem {
     return this.armedFlag;
   }
 
+  /** Супер-заряд закрыт (до 10 уровня забега): не копится, супер недоступен */
+  get isLocked(): boolean {
+    return this.lockedFlag;
+  }
+
+  /** Закрыть/открыть супер-заряд (синк с прогрессией) */
+  setLocked(locked: boolean): void {
+    this.lockedFlag = locked;
+    if (locked) {
+      this.armedFlag = false;
+      this.kills = 0;
+    }
+  }
+
   get lightningKillCount(): number {
     return this.balance.lightningKillCount;
   }
@@ -51,16 +67,18 @@ export class GodPowerSystem {
     return this.balance.superRadius;
   }
 
-  /** Учёт убитых молнией. true — бар заполнился только что */
+  /** Учёт убитых молнией. true — бар заполнился только что. Закрытый — no-op */
   registerKills(n: number): boolean {
     if (n <= 0) return false;
+    if (this.lockedFlag) return false;
     const wasCharged = this.isCharged;
     this.kills = Math.min(this.balance.superChargeRequired, this.kills + n);
     return !wasCharged && this.isCharged;
   }
 
-  /** Включение режима супер силы. false — заряд ещё не полон */
+  /** Включение режима супер силы. false — заряд ещё не полон или заряд закрыт */
   arm(): boolean {
+    if (this.lockedFlag) return false;
     if (!this.isCharged) return false;
     this.armedFlag = true;
     return true;

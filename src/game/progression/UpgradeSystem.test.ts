@@ -202,4 +202,49 @@ describe('UpgradeSystem', () => {
     expect(s.totalSouls).toBe(0);
     expect(s.levelOf('god.superRadius')).toBe(0);
   });
+
+  it('recordMaxLevel запоминает максимум и не уменьшается (ELEMENT_UNLOCKS)', () => {
+    const s = freshSystem();
+    expect(s.maxLevelReached).toBe(0);
+
+    expect(s.recordMaxLevel(4)).toBe(true);
+    expect(s.maxLevelReached).toBe(4);
+    expect(s.recordMaxLevel(2)).toBe(false);
+    expect(s.maxLevelReached).toBe(4);
+    expect(s.recordMaxLevel(8)).toBe(true);
+    expect(s.maxLevelReached).toBe(8);
+  });
+
+  it('maxLevelReached переживает перезагрузку (persistence)', () => {
+    const s = freshSystem();
+    s.recordMaxLevel(6);
+
+    const s2 = new UpgradeSystem(makeCatalog());
+    expect(s2.maxLevelReached).toBe(6);
+  });
+
+  it('reset обнуляет разлочку стихий (maxLevelReached)', () => {
+    const s = freshSystem();
+    s.recordMaxLevel(10);
+    s.reset();
+    expect(s.maxLevelReached).toBe(0);
+  });
+
+  it('resetAll обнуляет разлочку стихий (maxLevelReached)', () => {
+    const s = freshSystem();
+    s.recordMaxLevel(10);
+    s.resetAll();
+    expect(s.maxLevelReached).toBe(0);
+
+    const s2 = new UpgradeSystem(makeCatalog());
+    expect(s2.maxLevelReached).toBe(0);
+  });
+
+  it('resetSouls не трогает разлочку стихий', () => {
+    const s = freshSystem();
+    s.recordMaxLevel(6);
+    s.resetSouls();
+    expect(s.totalSouls).toBe(0);
+    expect(s.maxLevelReached).toBe(6);
+  });
 });
