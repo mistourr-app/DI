@@ -17,6 +17,7 @@ Fire: stroke cost	costPerUse-fire	300	2	8	10.00	9.5	9.00	8.50	8.00	7.50	7.00	6.5
 Fire: zone duration	fire.duration	300	2	8	5.00	5.50	6.00	6.50	7.00	7.50	8.00	8.50	9.00	effect
 God: charge required	god.superCharge	300	2	8	100	95	90	85	80	75	70	65	60	god
 God: kills per lightning	god.lightning	300	4.5	5	1.00	2.00	3.00	4.00	5.00	-	-	-	-	god
+God: lightning radius	god.lightningRadius	300	4.5	5	30.00	37.50	45.00	52.50	60.00	-	-	-	-	god
 God: super radius	god.superRadius	300	2	8	80.00	90.00	100.00	110.00	120.00	130.00	140.00	150.00	160.00	god
 Water: mana capacity	capacity-water	300	2	8	20.00	25.00	30.00	35.00	40.00	45.00	50.00	55.00	60.00	economy
 Water: mana per kill	gainPerKill-water	300	2	8	0.1	0.15	0.20	0.25	0.30	0.35	0.40	0.45	0.50	economy

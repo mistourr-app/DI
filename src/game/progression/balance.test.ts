@@ -24,6 +24,7 @@ const BALANCE_CSV = [
   'Fire: zone duration;fire.duration;110;1.6;8;5,00;5,50;6,00;6,50;7,00;7,50;8,00;8,50;9,00;;effect',
   'God: charge required;god.superCharge;110;1.6;8;80;76;72;69;65;61;58;54;50;;god',
   'God: kills per lightning;god.lightning;600;1.6;5;1,00;2,00;3,00;4,00;5,00;;;;;;god',
+  'God: lightning radius;god.lightningRadius;300;4.5;5;30,00;37,50;45,00;52,50;60,00;;;;;;god',
   'God: super radius;god.superRadius;130;1.6;8;80,00;100,00;120,00;140,00;160,00;180,00;200,00;220,00;240,00;;god',
   'Water: mana capacity;capacity-water;75;1.6;8;20,00;25,00;30,00;35,00;40,00;45,00;50,00;55,00;60,00;;economy',
   'Water: mana per kill;gainPerKill-water;75;1.6;8;0.3;0.4;0.5;0.6;0.7;0.8;0.9;0.95;1.0;;economy',
@@ -34,9 +35,9 @@ const BALANCE_CSV = [
 ].join('\n');
 
 describe('parseBalance', () => {
-  it('парсит все 25 параметров из balance_1.csv', () => {
+  it('парсит все 26 параметров из balance_1.csv', () => {
     const entries = parseBalance(BALANCE_CSV);
-    expect(entries.length).toBe(25);
+    expect(entries.length).toBe(26);
   });
 
   it('нормализует десятичные запятые и точки', () => {
@@ -120,12 +121,15 @@ describe('parseBalance', () => {
     // Разделитель и плейсхолдеры не должны ломать парсинг рабочего файла
     const csv = readFileSync(resolve(__dirname, '../../../docs/balance_1.csv'), 'utf8');
     const entries = parseBalance(csv);
-    expect(entries.length).toBe(25);
+    expect(entries.length).toBe(26);
     const byKey = Object.fromEntries(entries.map((e) => [e.key, e]));
     expect(byKey['capacity-fire'].values).toEqual([20, 25, 30, 35, 40, 45, 50, 55, 60]);
     expect(byKey['earth.bites'].values).toEqual([5, 9, 13, 16, 20]);
     expect(byKey['earth.bites'].group).toBe('effect');
     expect(byKey['earth.bites'].maxLevel).toBe(4);
+    expect(byKey['god.lightningRadius'].values).toEqual([30, 37.5, 45, 52.5, 60]);
+    expect(byKey['god.lightningRadius'].maxLevel).toBe(4);
+    expect(byKey['god.lightningRadius'].group).toBe('god');
   });
 });
 
@@ -172,6 +176,8 @@ describe('buildUpgradeDefs', () => {
     expect(GameConfig.elements.water.slowFactor).toBe(0.45);
     byKey['god.lightning'].apply(2);
     expect(GameConfig.godPower.lightningKillCount).toBe(3);
+    byKey['god.lightningRadius'].apply(2);
+    expect(GameConfig.godPower.lightningRadius).toBe(45);
     byKey['earth.bites'].apply(1);
     expect(GameConfig.earth.bitesPerCell).toBe(9);
     byKey['god.superRadius'].apply(1);
@@ -191,7 +197,7 @@ describe('buildUpgradeDefs', () => {
     expect(GameConfig.elements.air.airDuration).toBe(5.5);
   });
 
-  it('полный макс всех параметров ≈ 166 тыс душ (бюджет прокачки)', () => {
+  it('полный макс всех параметров ≈ 201 тыс душ (бюджет прокачки)', () => {
     const defs2 = buildUpgradeDefs(parseBalance(BALANCE_CSV));
     let total = 0;
     for (const d of defs2) {
@@ -199,6 +205,6 @@ describe('buildUpgradeDefs', () => {
         total += upgradeCost(d, lvl)!;
       }
     }
-    expect(total).toBe(165777);
+    expect(total).toBe(200840);
   });
 });

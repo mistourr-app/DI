@@ -22,7 +22,7 @@
 - **Вода:** `slowFactor`, `wetDuration`.
 - **Воздух:** `pushStrength`, `airDuration`.
 - **Земля:** `bitesPerCell` (прочность ячеек), `biteRadius`.
-- **Сила бога:** `lightningKillCount`, `superRadius` (+ `lightningRadius` в конфиге), `superChargeRequired` (ГДД: «баланс, не прокачка»).
+- **Сила бога:** `lightningKillCount`, `lightningRadius`, `superRadius`, `superChargeRequired` (ГДД: «баланс, не прокачка» — но прокачивается).
 - **База:** `baseMaxHealth` (1000).
 
 **Вывод:** инфраструктура параметров готова — все значения в одном конфиге, системы (мана/заряд) уже умеют `onBalanceChanged()` и клэмпы. Нет только **ресурса мета-прогресса**, **экрана прокачки** и **формул**.
@@ -88,10 +88,10 @@
 
 | Параметр | Эффект | Диапазон | Приоритет |
 |---|---|---|---|
-| `lightningKillCount` | больше жертв молнии | 2 → 10 | ✅ MVP |
-| `superRadius` | шире супер атака | 100 → 250 | ✅ MVP |
-| `lightningRadius` | шире зона поиска молнии | 60 → 120 | 🔶 следом |
-| `superChargeRequired` | дешевле заряд бара | 80 → 50 | 🔶 следом (ГДД: «баланс» — но как прокачка усиливает ритм) |
+| `lightningKillCount` | больше жертв молнии | 1 → 5 (5 уровней) | ✅ MVP |
+| `lightningRadius` | шире зона поиска молнии | 30 → 60 css-px (5 уровней) | ✅ MVP |
+| `superRadius` | шире супер атака | 80 → 160 (8 уровней) | ✅ MVP |
+| `superChargeRequired` | дешевле заряд бара | 100 → 60 (8 уровней) | ✅ MVP |
 
 ### 4.3. База (глобально)
 
@@ -263,3 +263,4 @@ src/game/ui/soulsCounter.ts # единый счётчик душ: иконка +
 | 21.09.2026 | Итерация 2 (аудит): души персистятся без записи на каждое убийство (`hasUnsaved` + троттл-автосейв, сейв на GAME OVER и `pagehide`/`visibilitychange`); бейдж «Души за забег: +N» на поражении (§6). Детали — [SCENES_IMPROVEMENTS.md](./SCENES_IMPROVEMENTS.md) |
 | 21.09.2026 | Единый счётчик душ (`src/game/ui/soulsCounter.ts`): иконка + число, одинаковый вид и позиция в геймплее, на поп-апах и в прокачке; `depth` выше поп-апов, чтобы был виден на «Deus vivit»/«Deus mortuus est» (§6) |
 | 21.09.2026 | Души даёт только обычный тап-молния: `killEnemy(enemy, grantSoul)`; супер сила бога, эффекты стихий и земля-барьер душ больше не начисляют (§3, §8). Тем же правилом — мана алтарей: супер больше не наполняет стихии (ELEMENT_SYSTEM.md §2) |
+| 21.09.2026 | Радиус обычной атаки бога (`lightningRadius`) стал прокачиваемым: `god.lightningRadius` в `balance_1.csv`, 5 уровней 30→60 css-px; `applyForKey` пишет в `GameConfig.godPower.lightningRadius` (§4.2) |

@@ -231,6 +231,8 @@ function applyForKey(key: string, values: number[]): (level: number) => void {
       return (lvl) => { GameConfig.elements.air.airDuration = val(lvl); };
     case 'god.lightning':
       return (lvl) => { GameConfig.godPower.lightningKillCount = val(lvl); };
+    case 'god.lightningRadius':
+      return (lvl) => { GameConfig.godPower.lightningRadius = val(lvl); };
     case 'god.superRadius':
       return (lvl) => { GameConfig.godPower.superRadius = val(lvl); };
     case 'god.superCharge':
