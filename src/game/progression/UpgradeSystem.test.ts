@@ -70,6 +70,40 @@ describe('UpgradeSystem', () => {
     expect(s.totalSouls).toBe(200 - cost);
   });
 
+  it('addSouls помечает состояние грязным, save() сбрасывает флаг', () => {
+    const s = freshSystem();
+    expect(s.hasUnsaved).toBe(false);
+
+    s.addSouls(7);
+    expect(s.hasUnsaved).toBe(true);
+
+    s.save();
+    expect(s.hasUnsaved).toBe(false);
+  });
+
+  it('покупка сохраняет (флаг dirty сбрасывается)', () => {
+    const s = freshSystem();
+    s.addSouls(200);
+    expect(s.hasUnsaved).toBe(true);
+
+    s.buy('capacity-fire');
+    expect(s.hasUnsaved).toBe(false);
+  });
+
+  it('несохранённые души не переживают перезагрузку, save() — переживают', () => {
+    const s = freshSystem();
+    s.addSouls(50);
+    expect(s.hasUnsaved).toBe(true);
+
+    // без save() состояние в памяти не попало в хранилище
+    const unsaved = new UpgradeSystem(makeCatalog());
+    expect(unsaved.totalSouls).toBe(0);
+
+    s.save();
+    const saved = new UpgradeSystem(makeCatalog());
+    expect(saved.totalSouls).toBe(50);
+  });
+
   it('buy не уходит в минус и не качает без средств', () => {
     const s = freshSystem();
     s.addSouls(10);

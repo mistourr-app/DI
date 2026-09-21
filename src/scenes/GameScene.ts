@@ -14,7 +14,8 @@ import { ElementEffectSystem } from '../game/element/ElementEffectSystem';
 import { TuningStore, type TuningSnapshot } from '../game/save/TuningStore';
 import { progression } from '../game/progression/progressionStore';
 import { upgradeCatalog } from '../game/progression/upgradeCatalog';
-import { computeGameArea } from '../game/config/layout';
+import { computeGameArea, type GameArea } from '../game/config/layout';
+import { createSoulsCounter, type SoulsCounter } from '../game/ui/soulsCounter';
 import monsterBaseUrl from '../assets/monster_base.png';
 import obstaclesBlobUrl from '../assets/obstacles_blob.png';
 import obstaclesBlobInfernoUrl from '../assets/obstacles_blob_inferno.png';
@@ -34,6 +35,11 @@ const DEBUG_FONT_MAX = Math.round(16 * UI_SCALE);
 const DEBUG_FONT_MIN = Math.round(9 * UI_SCALE);
 // Троттлинг тика статусов стихий, мс (~10 Гц)
 const FX_TICK_INTERVAL = 100;
+// Троттлинг автосейва душ: не чаще, чем раз в N убийств / раз в T мс.
+// addSouls() намеренно не пишет в localStorage на каждое убийство (см. I1
+// в SCENES_IMPROVEMENTS.md) — сцена флашит пачку по этим порогам и на game over
+const SOULS_SAVE_EVERY_KILLS = 25;
+const SOULS_SAVE_INTERVAL_MS = 5000;
 // Инерция воздуха (fallback-путь): отклик в зоне, затухание вне, порог сноса
 const AIR_RESPONSE = 0.35;
 const AIR_DAMP = 0.97;
@@ -70,7 +76,7 @@ export class GameScene extends Phaser.Scene {
   // Зоны экрана
   private battlefieldZone!: Phaser.Geom.Rectangle;
   private baseZone!: Phaser.Geom.Rectangle;
-  private gameArea!: Phaser.Geom.Rectangle;
+  private gameArea!: GameArea;
   /** Статичный фон (чёрный экран + поле боя + зона базы + разделитель) одним объектом */
   private zoneGraphics!: Phaser.GameObjects.Graphics;
   /** Текстура земли на поле боя (tileSprite, загон и база не покрываются) */
@@ -294,6 +300,10 @@ export class GameScene extends Phaser.Scene {
     // уровней прокачки — авторитетный источник для качаемых полей
     this.applyAllProgression();
 
+    // Точка отсчёта «душ за забег» для бейджа на поражении
+    this.soulsRunStart = progression.totalSouls;
+    this.soulsSinceSave = 0;
+
     this.totalEnemiesToSpawn = this.currentLevel * GameScene.MONSTERS_PER_LEVEL_STEP;
 
     // Fluid simulation: воркер физики толпы (fallback — main-thread путь)
@@ -315,6 +325,9 @@ export class GameScene extends Phaser.Scene {
     // Кнопка настроек (поп-ап с параметрами)
     this.createSettingsButton();
 
+    // Единый счётчик душ (геймплей/поп-апы/прокачка — один вид и позиция)
+    this.createSoulsCounter();
+
     // Настраиваем управление
     this.setupInput();
     
@@ -325,14 +338,37 @@ export class GameScene extends Phaser.Scene {
     if (GameConfig.game.debug) {
       (window as any).__di = this;
       (window as any).__gc = GameConfig;
+      // Синглтон прогресса — для смоук/e2e-проверок персистентности душ
+      (window as any).__prog = progression;
     }
     
     // Добавляем обработчик изменения размера окна
     this.scale.on('resize', this.handleResize, this);
 
+    // Геометрия могла устареть, пока сцена спала (ротация/клавиатура/
+    // адресная строка на мобильном): при пробуждении пересчитываем зоны
+    this.events.on('wake', this.onWake, this);
+
+    // Автосейв душ: гарантируем сохранение при уходе со страницы
+    // (сворачивание/закрытие мобильного PWA), плюс троттл по таймеру
+    window.addEventListener('pagehide', this.onPageHide);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    this.soulsSaveTimer = this.time.addEvent({
+      delay: SOULS_SAVE_INTERVAL_MS,
+      loop: true,
+      callback: () => this.saveSouls()
+    });
+
     // Снимаем его при остановке сцены (иначе после scene.restart() обработчик задублируется)
     this.events.once('shutdown', () => {
       this.scale.off('resize', this.handleResize, this);
+      this.events.off('wake', this.onWake, this);
+      window.removeEventListener('pagehide', this.onPageHide);
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
+      this.soulsSaveTimer?.remove();
+      this.soulsSaveTimer = null;
+      this.soulsCounter?.destroy();
+      this.soulsCounter = null;
       this.settingsOpen = false;
       this.closeEndPopups();
       // Останавливаем воркер физики и чистим карту спрайт<->агент
@@ -396,6 +432,7 @@ export class GameScene extends Phaser.Scene {
 
     this.cameras.main.setSize(width, height);
     this.setupScreenZones();
+    this.soulsCounter?.place(this.gameArea);
 
     // Перегенерация уровня под новый размер с тем же seed
     this.generateLevel();
@@ -419,7 +456,23 @@ export class GameScene extends Phaser.Scene {
 
     this.setupCamera();
   }
-  
+
+  /** Пробуждение после UpgradeScene: если экран изменился, пока сцена спала
+   *  (ротация/клавиатура/адресная строка), пересчитываем геометрию —
+   *  иначе следующий уровень построится по устаревшему gameArea */
+  private onWake(): void {
+    const { width, height } = this.scale.gameSize;
+    if (width !== this.layoutWidth || height !== this.layoutHeight) {
+      this.handleResize(this.scale.gameSize);
+    }
+  }
+
+  /** Флаш несохранённых душ (троттл-таймер, pagehide/visibilitychange, game over) */
+  private saveSouls(): void {
+    if (progression.hasUnsaved) progression.save();
+    this.soulsSinceSave = 0;
+  }
+
   private setupScreenZones(): void {
     const screenWidth = this.cameras.main.width;
     const screenHeight = this.cameras.main.height;
@@ -427,6 +480,9 @@ export class GameScene extends Phaser.Scene {
     // Игровое поле (9:19.5) — общий расчёт с UpgradeScene (layout.ts):
     // ГЛАВНОЕ ПРАВИЛО UI — все окна/поп-апы/экраны живут внутри gameArea.
     this.gameArea = computeGameArea(screenWidth, screenHeight);
+    // Запоминаем размер layout: на wake сравниваем с фактическим (I2)
+    this.layoutWidth = screenWidth;
+    this.layoutHeight = screenHeight;
 
     // Поле боя (5/6 высоты игрового поля)
     this.battlefieldZone = new Phaser.Geom.Rectangle(
@@ -1637,7 +1693,8 @@ export class GameScene extends Phaser.Scene {
   private createEndPopup(
     title: string,
     color: string,
-    buttons: Array<{ label: string; color: number; onClick: () => void }>
+    buttons: Array<{ label: string; color: number; onClick: () => void }>,
+    subtitle?: string
   ): Phaser.GameObjects.Container {
     const g = this.gameArea;
     const root = this.add.container(0, 0).setScrollFactor(0).setDepth(1300);
@@ -1647,7 +1704,8 @@ export class GameScene extends Phaser.Scene {
     dim.fillRect(g.x, g.y, g.width, g.height);
     root.add(dim);
 
-    const titleText = this.add.text(g.x + g.width / 2, g.y + g.height * 0.34, title, {
+    const titleY = g.y + g.height * (subtitle ? 0.30 : 0.34);
+    const titleText = this.add.text(g.x + g.width / 2, titleY, title, {
       font: `bold ${fontPx(36)}px Arial`,
       color,
       stroke: '#000000',
@@ -1656,6 +1714,18 @@ export class GameScene extends Phaser.Scene {
       wordWrap: { width: g.width - padPx(40) }
     }).setOrigin(0.5);
     root.add(titleText);
+
+    if (subtitle) {
+      const subText = this.add.text(g.x + g.width / 2, titleY + fontPx(38), subtitle, {
+        font: `bold ${fontPx(16)}px Arial`,
+        color: '#ffd700',
+        stroke: '#000000',
+        strokeThickness: padPx(3),
+        align: 'center',
+        wordWrap: { width: g.width - padPx(40) }
+      }).setOrigin(0.5);
+      root.add(subText);
+    }
 
     const btnW = Math.min(g.width - padPx(60), fontPx(280));
     const btnH = fontPx(52);
@@ -1718,20 +1788,29 @@ export class GameScene extends Phaser.Scene {
     // (кнопка «Начать заново» активировалась бы только с последним монстром).
     if (this.gameOverShown) return;
     this.gameOverShown = true;
+    // Души за забег не сгорают при GAME OVER (PROGRESSION §3): фиксируем на диск
+    this.saveSouls();
     this.closeEndPopups();
-    this.defeatPopup = this.createEndPopup('Deus mortuus est', '#ff0000', [
-      { label: 'НАЧАТЬ ЗАНОВО', color: 0x8b2e2e, onClick: () => this.onDefeatRestart() }
-    ]);
+    const earned = Math.max(0, progression.totalSouls - this.soulsRunStart);
+    this.defeatPopup = this.createEndPopup(
+      'Deus mortuus est',
+      '#ff0000',
+      [{ label: 'НАЧАТЬ ЗАНОВО', color: 0x8b2e2e, onClick: () => this.onDefeatRestart() }],
+      `Души за забег: +${earned}`
+    );
   }
 
   /** Поражение: забег с первого уровня (HP базы восстановлено, новый seed) */
   private onDefeatRestart(): void {
-    this.closeEndPopups();
+    this.saveSouls();
     // Смена уровня на 1-й: пересчитываем базовые плотность и размер структур
     // уровня. Иначе они оставались бы от уровня, на котором проиграли, и
     // первый уровень генерировался бы по настройкам проигранного.
     this.currentLevel = 1;
     this.applyLevelGenerationSettings();
+    // Новый забег — новая точка отсчёта награды
+    this.soulsRunStart = progression.totalSouls;
+    // closeEndPopups() вызывается внутри restartLevel() — не дублируем
     this.restartLevel(true);
     this.persistTuning();
   }
@@ -1739,6 +1818,7 @@ export class GameScene extends Phaser.Scene {
   private showVictory(): void {
     // Первое прохождение уровня: бонус +10·N душ (PROGRESSION §3)
     progression.completeLevel(this.currentLevel);
+    this.soulsCounter?.setValue(progression.totalSouls);
     this.closeEndPopups();
     this.victoryPopup = this.createEndPopup('Deus vivit', '#ffd700', [
       { label: 'ИГРАТЬ ДАЛЬШЕ', color: 0x2e8b57, onClick: () => this.onVictoryNext() },
@@ -1765,6 +1845,7 @@ export class GameScene extends Phaser.Scene {
   /** Вызов из UpgradeScene: применить покупки и запустить следующий уровень */
   requestNextLevel(): void {
     this.applyAllProgression();
+    this.soulsCounter?.setValue(progression.totalSouls);
     this.nextLevel();
   }
   
@@ -1856,10 +1937,36 @@ export class GameScene extends Phaser.Scene {
   // Единый инстанс прогресса (progressionStore) общий с UpgradeScene.
   /** Начислять ли души за убийства (выключается при очистке уровня в рестарте) */
   private awardingSouls: boolean = true;
+  /** Души на старте текущего забега — для бейджа «+N за забег» на поражении */
+  private soulsRunStart: number = 0;
+  /** Убийств с последнего автосейва душ (троттл localStorage) */
+  private soulsSinceSave: number = 0;
+  /** Периодический автосейв душ, пока есть несохранённые */
+  private soulsSaveTimer: Phaser.Time.TimerEvent | null = null;
+  /** Единый счётчик душ (иконка + число) в левом верхнем углу поля */
+  private soulsCounter: SoulsCounter | null = null;
+  /** Размер layout на момент последнего setupScreenZones (для пересчёта на wake) */
+  private layoutWidth: number = 0;
+  private layoutHeight: number = 0;
+  /** Bound-слушатели сохранения при уходе со страницы (снимаются в shutdown) */
+  private onPageHide = (): void => { this.saveSouls(); };
+  private onVisibilityChange = (): void => {
+    if (document.visibilityState === 'hidden') this.saveSouls();
+  };
 
   // --- Поп-апы конца уровня (победа/поражение) ---
   private victoryPopup: Phaser.GameObjects.Container | null = null;
   private defeatPopup: Phaser.GameObjects.Container | null = null;
+
+  /** Единый счётчик душ: depth выше поп-апов конца уровня (1300), поэтому
+   *  виден и в геймплее, и на поп-апах победы/поражения. Прячется, пока
+   *  открыт поп-ап настроек, чтобы не перекрывать его заголовок. */
+  private createSoulsCounter(): void {
+    this.soulsCounter?.destroy();
+    this.soulsCounter = createSoulsCounter(this, this.gameArea, 1400);
+    this.soulsCounter.setValue(progression.totalSouls);
+    this.soulsCounter.setVisible(!this.settingsOpen);
+  }
 
   private createSettingsButton(): void {
     if (this.settingsButton) {
@@ -1922,11 +2029,14 @@ export class GameScene extends Phaser.Scene {
       this.settingsPopup = null;
     }
     this.popupUpdaters = [];
+    this.soulsCounter?.setVisible(true);
   }
 
   private openSettingsPopup(): void {
     this.closeSettingsPopup();
     this.settingsOpen = true;
+    // Счётчик душ не перекрывает заголовок открытого поп-апа настроек
+    this.soulsCounter?.setVisible(false);
 
     const screenWidth = this.cameras.main.width;
     const screenHeight = this.cameras.main.height;
@@ -2193,6 +2303,7 @@ export class GameScene extends Phaser.Scene {
   public resetAllProgress(): void {
     // 1. Стираем мета-прогресс: души = 0, уровни = 0, пройденные уровни = ∅.
     progression.resetAll();
+    this.soulsCounter?.setValue(progression.totalSouls);
     // 2. GameConfig возвращается к базовым значениям баланса (level 0 из CSV)
     this.applyAllProgression();
     // 3. Поля, не покрытые каталогом прокачки: радиус штриха стихий — к дефолту
@@ -2208,6 +2319,8 @@ export class GameScene extends Phaser.Scene {
     this.genBlobScale = GameScene.levelBlobScale(1);
     // 5. Стираем сохранённый тюнинг (иначе applyStoredTuning вернёт перегруз)
     TuningStore.clear();
+    // Точка отсчёта «душ за забег» — с нуля
+    this.soulsRunStart = 0;
     // 6. Рестарт с первого уровня: новый seed, полная очистка поля и стейтов
     this.restartLevel(true);
     this.persistTuning();
@@ -2503,6 +2616,12 @@ export class GameScene extends Phaser.Scene {
     // принудительной очистке уровня в рестарте (awardingSouls = false)
     if (this.awardingSouls) {
       progression.addSouls(1);
+      this.soulsCounter?.setValue(progression.totalSouls);
+      // Автосейв пачкой: не пишем localStorage на каждое убийство (I1)
+      this.soulsSinceSave++;
+      if (this.soulsSinceSave >= SOULS_SAVE_EVERY_KILLS) {
+        this.saveSouls();
+      }
     }
   }
 

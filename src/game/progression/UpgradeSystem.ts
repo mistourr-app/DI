@@ -24,6 +24,8 @@ export class UpgradeSystem {
   private souls = 0;
   private levels: Record<string, number> = {};
   private completed = new Set<number>();
+  /** Есть ли несохранённые изменения (души, начисленные addSouls) */
+  private dirty = false;
 
   constructor(catalog: Record<string, UpgradeDef>) {
     this.catalog = catalog;
@@ -35,6 +37,11 @@ export class UpgradeSystem {
 
   get totalSouls(): number {
     return this.souls;
+  }
+
+  /** true — в памяти есть души, ещё не записанные в localStorage */
+  get hasUnsaved(): boolean {
+    return this.dirty;
   }
 
   levelOf(key: string): number {
@@ -69,10 +76,13 @@ export class UpgradeSystem {
     return true;
   }
 
-  /** Начисление душ за боевые убийства (1/убийство). Не сохраняет каждый раз */
+  /** Начисление душ за боевые убийства (1/убийство). Не сохраняет каждый раз —
+   *  помечает состояние грязным; сцена флашит его по троттлу и на game over
+   *  (см. SCENES_IMPROVEMENTS.md, I1) */
   addSouls(n: number): void {
     if (n <= 0) return;
     this.souls += n;
+    this.dirty = true;
   }
 
   /**
@@ -166,6 +176,7 @@ export class UpgradeSystem {
         completedLevels: Array.from(this.completed)
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snap));
+      this.dirty = false;
     } catch {
       // приватный режим / переполнение — прокачка живёт до конца сессии
     }

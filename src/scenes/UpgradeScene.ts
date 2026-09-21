@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { fontPx, padPx } from '../game/config/uiScale';
-import { computeGameArea } from '../game/config/layout';
+import { computeGameArea, type GameArea } from '../game/config/layout';
+import { createSoulsCounter, type SoulsCounter } from '../game/ui/soulsCounter';
 import { progression } from '../game/progression/progressionStore';
 import { upgradeDefs, valueAt, displayValue, type UpgradeDef } from '../game/progression/upgradeCatalog';
 import type { GameScene } from './GameScene';
@@ -15,10 +16,12 @@ import type { GameScene } from './GameScene';
  * ГЛАВНОЕ ПРАВИЛО UI: весь интерфейс живёт ВНУТРИ gameArea (9:19.5).
  */
 export class UpgradeScene extends Phaser.Scene {
-  private gameArea!: Phaser.Geom.Rectangle;
+  private gameArea!: GameArea;
   private root: Phaser.GameObjects.Container | null = null;
   private content: Phaser.GameObjects.Container | null = null;
-  private soulsText: Phaser.GameObjects.Text | null = null;
+  private soulsCounter: SoulsCounter | null = null;
+  /** Графика маски списка (уничтожается при rebuild, иначе течёт на ресайзе) */
+  private maskGraphics: Phaser.GameObjects.Graphics | null = null;
 
   private scrollY = 0;
   private maxScroll = 0;
@@ -49,9 +52,12 @@ export class UpgradeScene extends Phaser.Scene {
     this.events.once('shutdown', () => {
       this.scale.off('resize', this.handleResize, this);
       this.dragging = false;
+      this.maskGraphics?.destroy();
+      this.maskGraphics = null;
+      this.soulsCounter?.destroy();
+      this.soulsCounter = null;
       this.root = null;
       this.content = null;
-      this.soulsText = null;
     });
   }
 
@@ -68,6 +74,11 @@ export class UpgradeScene extends Phaser.Scene {
       this.root.destroy(true);
       this.root = null;
     }
+    // Маска списка не входит в root — уничтожаем отдельно, иначе утечка при rebuild
+    this.maskGraphics?.destroy();
+    this.maskGraphics = null;
+    this.soulsCounter?.destroy();
+    this.soulsCounter = null;
     const g = this.gameArea;
     const camW = this.cameras.main.width;
     const camH = this.cameras.main.height;
@@ -90,18 +101,19 @@ export class UpgradeScene extends Phaser.Scene {
     bg.strokeRect(g.x, g.y, g.width, g.height);
     root.add(bg);
 
-    // --- Шапка: заголовок + баланс душ + служебный fresh start ---
+    // --- Шапка: заголовок + счётчик душ (общий вид/позиция с геймплеем) ---
+    // Служебная кнопка fresh start — на ОТДЕЛЬНОЙ строке: на узком игровом
+    // поле центрированный заголовок и правая кнопка иначе пересекались бы.
     const pad = padPx(14);
-    const headerH = fontPx(72);
-    root.add(this.add.text(g.x + g.width / 2, g.y + pad + fontPx(12), 'ПРОКАЧКА', {
+    const headerH = fontPx(92);
+    root.add(this.add.text(g.x + g.width / 2, g.y + pad + fontPx(4), 'ПРОКАЧКА', {
       font: `bold ${fontPx(22)}px Arial`,
       color: '#ffffff'
     }).setOrigin(0.5, 0));
-    this.soulsText = this.add.text(g.x + g.width / 2, g.y + pad + fontPx(44), `Души: ${progression.totalSouls}`, {
-      font: `bold ${fontPx(15)}px Arial`,
-      color: '#ffd700'
-    }).setOrigin(0.5, 0);
-    root.add(this.soulsText);
+
+    // Тот же виджет, что в геймплее и на поп-апах — левый верхний угол поля
+    this.soulsCounter = createSoulsCounter(this, g, 50);
+    this.soulsCounter.setValue(progression.totalSouls);
 
     this.buildFreshStartButton(root, g, pad);
 
@@ -114,6 +126,7 @@ export class UpgradeScene extends Phaser.Scene {
     // Маска: содержимое списка видно только между шапкой и нижней панелью
     const maskRect = this.make.graphics({ x: 0, y: 0 }, false);
     maskRect.fillRect(g.x, this.viewportTop, viewportW, this.viewportBottom - this.viewportTop);
+    this.maskGraphics = maskRect;
     const mask = new Phaser.Display.Masks.GeometryMask(this, maskRect);
 
     const content = this.add.container(0, this.viewportTop).setMask(mask);
@@ -129,10 +142,10 @@ export class UpgradeScene extends Phaser.Scene {
   /** Временная тестовая кнопка: полный fresh start (стирает прокачку и тюнинг) */
   private buildFreshStartButton(
     root: Phaser.GameObjects.Container,
-    g: Phaser.Geom.Rectangle,
+    g: GameArea,
     pad: number
   ): void {
-    const btnY = g.y + pad + fontPx(2);
+    const btnY = g.y + pad + fontPx(58);
     const btnPad = padPx(6);
     const btnBg = '#1a1f2e';
     const maxBtnW = g.width - pad * 2 - padPx(2);
@@ -218,7 +231,7 @@ export class UpgradeScene extends Phaser.Scene {
   private rebuildContent(): void {
     if (!this.content) return;
     this.content.removeAll(true);
-    this.soulsText?.setText(`Души: ${progression.totalSouls}`);
+    this.soulsCounter?.setValue(progression.totalSouls);
 
     const viewportW = this.gameArea.width;
     const pad = padPx(14);
@@ -369,7 +382,8 @@ export class UpgradeScene extends Phaser.Scene {
   /** «Сохранить и играть»: зафиксировать и запустить следующий уровень */
   private onSaveAndPlay(): void {
     progression.save();
-    const gs = this.scene.get('GameScene') as GameScene;
+    const gs = this.getGameScene();
+    if (!gs) return;
     gs.requestNextLevel();
     this.scene.wake('GameScene');
     this.scene.stop();
@@ -377,10 +391,15 @@ export class UpgradeScene extends Phaser.Scene {
 
   /** Временный fresh start: стирает прокачку и тюнинг, забег с первого уровня */
   private onFreshStart(): void {
-    const gs = this.scene.get('GameScene') as GameScene;
+    const gs = this.getGameScene();
+    if (!gs) return;
     gs.resetAllProgress();
     this.scene.wake('GameScene');
     this.scene.stop();
+  }
+
+  private getGameScene(): GameScene | null {
+    return (this.scene.get('GameScene') as GameScene | undefined) ?? null;
   }
 
   // --- Ввод ---

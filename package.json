@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "jest",
-    "test:e2e": "jest --config jest.e2e.config.js",
+    "test:e2e": "jest --config jest.e2e.config.cjs --runInBand",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src/**/*.ts",
     "analyze": "webpack-bundle-analyzer dist/stats.json"

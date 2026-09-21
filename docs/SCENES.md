@@ -177,6 +177,7 @@ UpgradeScene получает ссылку через `import type { GameScene }
 ## 9. Ссылки
 
 - [PROGRESSION.md](./PROGRESSION.md) — экономика, респек, `UpgradeSystem`.
+- [SCENES_IMPROVEMENTS.md](./SCENES_IMPROVEMENTS.md) — итерация 2: персистентность душ, wake-геометрия, тесты, e2e/lint.
 - [GAME_DESIGN_DOCUMENT.md](./GAME_DESIGN_DOCUMENT.md) — алтари, сила бога.
 - Код: `src/scenes/GameScene.ts`, `src/game/progression/UpgradeSystem.ts`, `src/game/progression/upgradeCatalog.ts`, `src/game/Game.ts`, `src/game/config/uiScale.ts`.
 
@@ -193,3 +194,4 @@ UpgradeScene получает ссылку через `import type { GameScene }
 | 21.09.2026 | Реализовано: `layout.ts`, `progressionStore.ts`, `UpgradeScene.ts`, поп-апы в GameScene, респек/индикатор покупки, переходы sleep/wake; `Game.ts` регистрирует обе сцены. `tsc --noEmit`, `npm test` (97/97), `npm run build` и Puppeteer-смоук пройдены |
 | 21.09.2026 | Фикс: монстры продолжают доходить до базы при 0 HP, каждый вызов `handleEnemyReachedBase` пересоздавал поп-ап поражения и заново запускал секундную задержку — кнопка активировалась только с последним монстром. Добавлен guard `if (this.gameOverShown) return;` в `showGameOver()` |
 | 21.09.2026 | Фикс: «Начать заново» не пересчитывал базовые плотность/размер структур уровня — 1-й уровень генерировался с настройками проигранного. Добавлен `applyLevelGenerationSettings()` (используется в `setLevel` и `onDefeatRestart`); `applyStoredTuning()` теперь всегда применяет базовые ген-параметры уровня (в т.ч. на чистой установке), оверрайды поп-апа — поверх |
+| 21.09.2026 | Итерация 2 (аудит): персистентность душ (dirty-флаг `hasUnsaved`, автосейв по убийствам/таймеру, сейв на game over и `pagehide`/`visibilitychange`, бейдж «Души за забег: +N»), пересчёт геометрии на `wake` после ресайза во сне, `layout.ts` без Phaser + unit-тест `computeGameArea`, null-guard/шапка/маска в UpgradeScene, рабочий e2e-харнесс, конфиг ESLint. Подробности — [SCENES_IMPROVEMENTS.md](./SCENES_IMPROVEMENTS.md); `tsc`, `npm test` (105/105), `npm run build`, `npm run lint`, `npm run test:e2e` — проходят |

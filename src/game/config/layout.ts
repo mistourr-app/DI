@@ -1,7 +1,13 @@
-import Phaser from 'phaser';
-
 /** Фиксированное соотношение игрового поля (ширина/высота) */
 export const GAME_RATIO = 9 / 19.5;
+
+/** Границы игрового поля: чистый тип без зависимости от Phaser (тестируемо в Node) */
+export interface GameArea {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 /**
  * Границы игрового поля 9:19.5 внутри экрана.
@@ -17,7 +23,7 @@ export const GAME_RATIO = 9 / 19.5;
 export function computeGameArea(
   screenWidth: number,
   screenHeight: number
-): Phaser.Geom.Rectangle {
+): GameArea {
   const screenRatio = screenWidth / screenHeight;
 
   let gameWidth: number;
@@ -42,5 +48,5 @@ export function computeGameArea(
     gameY = Math.round((screenHeight - gameHeight) / 2);
   }
 
-  return new Phaser.Geom.Rectangle(gameX, gameY, gameWidth, gameHeight);
+  return { x: gameX, y: gameY, width: gameWidth, height: gameHeight };
 }

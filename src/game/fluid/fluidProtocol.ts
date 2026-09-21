@@ -164,8 +164,8 @@ export function fluidDisplacement(w: FluidWorld, s: number, out: DispOut): void 
   // Pressure — перегруженная локальная плотность выталкивает из центра масс
   if (n > t.DENSITY_MAX) {
     const overload = Math.min(1, (n - t.DENSITY_MAX) / t.DENSITY_MAX);
-    let ax = x - cenX;
-    let ay = y - cenY;
+    const ax = x - cenX;
+    const ay = y - cenY;
     const len = Math.sqrt(ax * ax + ay * ay);
     if (len > 0.001) {
       const k = (overload * t.PRESS_SCALE * p.pressure) / len;
@@ -181,8 +181,8 @@ export function fluidDisplacement(w: FluidWorld, s: number, out: DispOut): void 
   fy += (avgVY - vy[s]) * kv;
 
   // Cohesion — слабая подтяжка к центроиду: рукава держатся вместе
-  let hx = cenX - x;
-  let hy = cenY - y;
+  const hx = cenX - x;
+  const hy = cenY - y;
   const hlen = Math.sqrt(hx * hx + hy * hy);
   if (hlen > 0.001) {
     const kc = t.COH_SCALE * p.cohesion;
