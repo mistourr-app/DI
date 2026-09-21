@@ -1935,8 +1935,6 @@ export class GameScene extends Phaser.Scene {
 
   // --- Прокачка (мета-прогресс между забегами, PROGRESSION.md) ---
   // Единый инстанс прогресса (progressionStore) общий с UpgradeScene.
-  /** Начислять ли души за убийства (выключается при очистке уровня в рестарте) */
-  private awardingSouls: boolean = true;
   /** Души на старте текущего забега — для бейджа «+N за забег» на поражении */
   private soulsRunStart: number = 0;
   /** Убийств с последнего автосейва душ (троттл localStorage) */
@@ -2479,14 +2477,13 @@ export class GameScene extends Phaser.Scene {
 
     const children = this.enemies.getChildren() as any[];
     // Принудительная очистка монстров уровня: души за них не начисляются
-    this.awardingSouls = false;
+    // (killEnemy по умолчанию без душ — их даёт только тап-молния)
     for (let i = 0; i < children.length; i++) {
       const e = children[i];
       if (e.active) {
         this.killEnemy(e);
       }
     }
-    this.awardingSouls = true;
     this.enemiesSpawned = 0;
     this.spawnTimer = 0;
     this.totalEnemiesToSpawn = this.currentLevel * GameScene.MONSTERS_PER_LEVEL_STEP;
@@ -2546,11 +2543,12 @@ export class GameScene extends Phaser.Scene {
     const radiusPx = gp.lightningRadius * UI_SCALE;
     const targets = this.captureTargets(x, y, radiusPx, gp.lightningKillCount);
     for (let i = 0; i < targets.length; i++) {
-      this.killEnemy(targets[i]);
+      // Обычная молния — это и есть «тап»: единственный источник душ
+      this.killEnemy(targets[i], true);
     }
     if (targets.length > 0) {
       gp.registerKills(targets.length);
-      // Убийства наполняют ману каждого алтаря стихий
+      // Убийства тапом наполняют ману каждого алтаря стихий (и бар силы бога)
       this.elementMana.gainFromKills(targets.length);
       this.refreshAltarBars();
     }
@@ -2565,11 +2563,9 @@ export class GameScene extends Phaser.Scene {
     const radiusPx = radiusCss * UI_SCALE;
     const targets = this.captureTargets(x, y, radiusPx, Infinity);
     for (let i = 0; i < targets.length; i++) {
-      this.killEnemy(targets[i]);
-    }
-    if (targets.length > 0) {
-      this.elementMana.gainFromKills(targets.length);
-      this.refreshAltarBars();
+      // Супер сила бога душ НЕ даёт и ману алтарей НЕ наполняет:
+      // и души, и прогресс стихий/бога идут только от обычного тапа-молнии
+      this.killEnemy(targets[i], false);
     }
     this.godIcon?.redraw();
     this.createWhiteFlash(x, y, radiusPx, true);
@@ -2602,8 +2598,13 @@ export class GameScene extends Phaser.Scene {
     return out;
   }
 
-  /** Уничтожение монстра: снятие с физики + возврат спрайта в пул */
-  private killEnemy(enemy: any): void {
+  /**
+   * Уничтожение монстра: снятие с физики + возврат спрайта в пул.
+   * @param grantSoul true только для убийств обычным тапом-молнией:
+   *   души даёт исключительно прямой тап (PROGRESSION §3). Супер силы бога,
+   *   эффекты стихий (огонь/горение и т.п.) и земля-барьер душ НЕ дают.
+   */
+  private killEnemy(enemy: any, grantSoul = false): void {
     const aid: number = enemy.aid ?? -1;
     if (aid >= 0 && this.fluidCtrl?.isWorkerMode) {
       this.fluidCtrl.removeAgent(aid);
@@ -2612,9 +2613,8 @@ export class GameScene extends Phaser.Scene {
     this.releaseOverlay(enemy);
     this.enemies.killAndHide(enemy);
     this.enemyCount--;
-    // 1 душа за каждое убийство (PROGRESSION §3); не начисляется при
-    // принудительной очистке уровня в рестарте (awardingSouls = false)
-    if (this.awardingSouls) {
+    // 1 душа за убийство тапом-молнией; прочие источники — без душ
+    if (grantSoul) {
       progression.addSouls(1);
       this.soulsCounter?.setValue(progression.totalSouls);
       // Автосейв пачкой: не пишем localStorage на каждое убийство (I1)
@@ -2632,7 +2632,7 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < children.length; i++) {
       const e = children[i];
       if (e.active) {
-        this.killEnemy(e); // killEnemy начисляет 1 душу за убийство
+        this.killEnemy(e, true); // служебная кнопка: имитируем тап-убийства
       }
     }
     this.refreshAltarBars();
