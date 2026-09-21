@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { GameScene } from '../scenes/GameScene';
+import { UpgradeScene } from '../scenes/UpgradeScene';
 import { UI_SCALE } from './config/uiScale';
 
 export class Game {
@@ -30,7 +31,7 @@ export class Game {
         height: h,
         zoom
       },
-      scene: [GameScene],
+      scene: [GameScene, UpgradeScene],
       physics: {
         default: 'arcade',
         arcade: {

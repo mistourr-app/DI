@@ -169,10 +169,13 @@ cost(n) = round(BASE × 1.55^(n−1))
 
 ```
 src/game/progression/
+├── progressionStore.ts   # синглтон progression = new UpgradeSystem(upgradeCatalog) — общий для GameScene и UpgradeScene
 ├── UpgradeSystem.ts      # чистый TS: души, уровни параметров, cost(), apply(), reset/resetSouls/resetAll
 ├── upgradeCatalog.ts     # описание параметров: ключ -> { base, max, title, apply } (17 шт.), из balance_1.csv
 ├── balance.ts            # парсер CSV баланса (docs/balance_1.csv) + построение UpgradeDef[]
 └── UpgradeSystem.test.ts # формулы, клэмпы, респек, персистентность, resetAll
+
+src/scenes/UpgradeScene.ts # экран прокачки (отдельная сцена; см. SCENES.md)
 ```
 
 - **Источник баланса — `docs/balance_1.csv`** (подключается Vite `?raw` в `upgradeCatalog.ts`):
@@ -188,15 +191,25 @@ src/game/progression/
   из CSV) + `onBalanceChanged()` (клэмпы маны/заряда уже написаны).
 - **Интеграция:** `ElementManaSystem`/`GodPowerSystem` ничего не знают о прокачке — читают конфиг как сейчас;
   старт сцены применяет сохранённые уровни до `generateLevel()` (`applyAllProgression`).
-- **UI:** полноэкранный экран прокачки в `GameScene` (паттерн поп-апа: container + строки параметров
-  с `[-]/[+] → [КУПИТЬ]`, скролл; правое верхнее — баланс душ).
-- **Респек:** старая кнопка «Сбросить прокачку» (возврат 100% душ по `reset()`) и «Сбросить души»
-  (`resetSouls()`) ЗАМЕНЕНЫ на одну кнопку **«↺ Сбросить прогресс»** — полный **fresh start**:
-  `UpgradeSystem.resetAll()` (души=0, уровни=0, пройденные уровни=∅ — в отличие от `reset()` без
-  возврата вложенного) + `TuningStore.clear()` (стирание тюнинга — иначе `applyStoredTuning` вернул бы
-  старые значения) + сброс полей сцены/GameConfig на дефолты первого уровня + `restartLevel(1)`.
-  Кнопка прижата к правому краю окна (origin(1,0)); если текст шире окна — кегль уменьшается
-  автоматически, за границы поля боя не вылезает.
+- **UI:** экран прокачки вынесен в отдельную Phaser-сцену **`src/scenes/UpgradeScene.ts`**
+  (см. [SCENES.md](./SCENES.md)). `GameScene` на время прокачки уходит в `sleep` (состояние забега
+  сохраняется), `UpgradeScene` рендерится поверх; прогресс — общий модульный синглтон
+  `src/game/progression/progressionStore.ts` (`export const progression = new UpgradeSystem(upgradeCatalog)`),
+  чтобы души/уровни не рассинхронизировались между сценами.
+  - Вход — из поп-апа победы `Deus vivit` («Прокачка»); выходы — «Сохранить и играть»
+    (`requestNextLevel()` → `wake(GameScene)` + `stop(UpgradeScene)`) и «Сброс».
+  - Покупка сразу пишет в localStorage (`UpgradeSystem.buy()`); в `GameConfig` значения применяются
+    на пробуждении через `applyAllProgression()` (`GameScene.requestNextLevel()`).
+  - **Респек:** нижняя кнопка **«Сброс»** → `UpgradeSystem.reset()` возвращает 100% вложенных душ
+    (уровни в 0), экран остаётся открытым.
+  - **Индикатор покупки:** «куплено за текущий визит» (`purchasedThisVisit: Set<string>`, очищается
+    при входе и по «Сброс») — строка параметра подсвечивается зелёным фоном.
+- **Fresh start (тестовая кнопка):** «↺ Сбросить прогресс» в шапке `UpgradeScene` →
+  `GameScene.resetAllProgress()` — полный fresh start: `UpgradeSystem.resetAll()` (души=0, уровни=0,
+  пройденные уровни=∅ — в отличие от `reset()` без возврата вложенного) + `TuningStore.clear()`
+  (стирание тюнинга — иначе `applyStoredTuning` вернул бы старые значения) + сброс полей сцены/GameConfig
+  на дефолты первого уровня + `restartLevel(true)`. Кнопка прижата к правому краю окна (origin(1,0));
+  если текст шире окна — кегль уменьшается автоматически, за границы поля боя не вылезает.
 - **Тесты:** cost-формула, клэмпы, респек, загрузка/сохранение, «души не уходят в минус», resetAll.
 
 ---
@@ -222,7 +235,7 @@ src/game/progression/
 
 ---
 
-**Дата:** 20.09.2026 · **Версия:** 0.2 (реализовано; история — ниже)
+**Дата:** 21.09.2026 · **Версия:** 0.3 (реализовано; история — ниже)
 
 ---
 
@@ -232,3 +245,4 @@ src/game/progression/
 |------|-----------|
 | 12.09.2026 | Создан документ: экономика, скоуп параметров, структура, статьи (проект, v0.1) |
 | 20.09.2026 | Реализация as-built: баланс из `docs/balance_1.csv` (парсер `balance.ts`, устойчив к формату), `UpgradeSystem`, экран прокачки; старое «прокачку → повторить бой» при победе теперь открывает полноэкранный экран прокачки; кнопки «сбросить прокачку»/«сбросить души» заменены на одну «Сбросить прогресс» (fresh start: `resetAll()` + `TuningStore.clear()` + уровень 1) |
+| 21.09.2026 | Экран прокачки вынесен в отдельную сцену `UpgradeScene`; прогресс — синглтон `progressionStore`; вход из поп-апа победы, выходы «Сброс» (респек `reset()`) и «Сохранить и играть» (`requestNextLevel`); индикатор покупки за визит; fresh start оставлен тестовой кнопкой в шапке. Детали — [SCENES.md](./SCENES.md) |

@@ -12,8 +12,9 @@ import { ElementAltarIcon } from '../game/element/ElementAltarIcon';
 import { EarthBarrierSystem } from '../game/element/EarthBarrierSystem';
 import { ElementEffectSystem } from '../game/element/ElementEffectSystem';
 import { TuningStore, type TuningSnapshot } from '../game/save/TuningStore';
-import { UpgradeSystem } from '../game/progression/UpgradeSystem';
-import { upgradeCatalog, upgradeDefs, valueAt, displayValue, type UpgradeDef } from '../game/progression/upgradeCatalog';
+import { progression } from '../game/progression/progressionStore';
+import { upgradeCatalog } from '../game/progression/upgradeCatalog';
+import { computeGameArea } from '../game/config/layout';
 import monsterBaseUrl from '../assets/monster_base.png';
 import obstaclesBlobUrl from '../assets/obstacles_blob.png';
 import obstaclesBlobInfernoUrl from '../assets/obstacles_blob_inferno.png';
@@ -92,7 +93,6 @@ export class GameScene extends Phaser.Scene {
   private enemyCount: number = 0;           // Текущее количество на экране
   private victoryShown: boolean = false;     // Экран победы показан
   private gameOverShown: boolean = false;    // Экран поражения показан
-  private endText: Phaser.GameObjects.Text | null = null; // ПОБЕДА/GAME OVER
   
   // Здоровье базы
   private baseHealth: number = 1000;        // Начальное здоровье базы
@@ -332,10 +332,9 @@ export class GameScene extends Phaser.Scene {
 
     // Снимаем его при остановке сцены (иначе после scene.restart() обработчик задублируется)
     this.events.once('shutdown', () => {
-this.scale.off('resize', this.handleResize, this);
+      this.scale.off('resize', this.handleResize, this);
       this.settingsOpen = false;
-      this.progressionRoot = null;
-      this.progressionContent = null;
+      this.closeEndPopups();
       // Останавливаем воркер физики и чистим карту спрайт<->агент
       if (this.fluidCtrl) {
         this.fluidCtrl.destroy();
@@ -390,6 +389,8 @@ this.scale.off('resize', this.handleResize, this);
   }
   
   private handleResize(gameSize: Phaser.Structs.Size): void {
+    // Пока сцена спит (открыт UpgradeScene), перестраивать поле нельзя
+    if (!this.scene.isActive()) return;
     const width = gameSize.width;
     const height = gameSize.height;
 
@@ -422,52 +423,25 @@ this.scale.off('resize', this.handleResize, this);
   private setupScreenZones(): void {
     const screenWidth = this.cameras.main.width;
     const screenHeight = this.cameras.main.height;
-    const screenRatio = screenWidth / screenHeight;
-    const gameRatio = 9 / 19.5; // Фиксированное соотношение игрового поля
 
-    let gameWidth: number;
-    let gameHeight: number;
-    let gameX: number;
-    let gameY: number;
-
-    if (screenRatio > gameRatio) {
-      // Экран шире → игровое поле занимает ВСЮ высоту, центрируется по горизонтали.
-      // Ширина ОКРУГЛЯЕТСЯ ВВЕРХ до кратной 16: cellSize сетки = 16px ровно,
-      // тайлы в целых позициях — без вертикальных/горизонтальных полос
-      // (дробный cellSize давал швы арта на субпиксельном рендере).
-      gameHeight = screenHeight;
-      gameWidth = Math.ceil((screenHeight * gameRatio) / 16) * 16;
-      gameX = Math.round((screenWidth - gameWidth) / 2);
-      gameY = 0;
-    } else {
-      // Экран уже → игровое поле занимает ВСЮ ширину (канвас уже кратен 16)
-      gameWidth = screenWidth;
-      gameHeight = Math.round(screenWidth / gameRatio);
-      gameX = 0;
-      gameY = Math.round((screenHeight - gameHeight) / 2);
-    }
-
-    // Игровое поле (9:19.5)
-    // ГЛАВНОЕ ПРАВИЛО UI: вся игра живёт внутри gameArea — все окна, поп-апы,
-    // экраны (прокачка, настройки и т.п.) размещаются ВНУТРИ этих границ,
-    // а не на всю ширину/высоту устройства (на широких экранах слева/справа
-    // остаётся «арт-окружение», за которое интерфейс выходить не должен).
-    this.gameArea = new Phaser.Geom.Rectangle(gameX, gameY, gameWidth, gameHeight);
+    // Игровое поле (9:19.5) — общий расчёт с UpgradeScene (layout.ts):
+    // ГЛАВНОЕ ПРАВИЛО UI — все окна/поп-апы/экраны живут внутри gameArea.
+    this.gameArea = computeGameArea(screenWidth, screenHeight);
 
     // Поле боя (5/6 высоты игрового поля)
     this.battlefieldZone = new Phaser.Geom.Rectangle(
-      gameX,
-      gameY,
-      gameWidth,
-      Math.round(gameHeight * GameScene.BATTLEFIELD_RATIO)
+      this.gameArea.x,
+      this.gameArea.y,
+      this.gameArea.width,
+      Math.round(this.gameArea.height * GameScene.BATTLEFIELD_RATIO)
     );
 
     // Зона базы (1/6 высоты игрового поля)
     this.baseZone = new Phaser.Geom.Rectangle(
-      gameX,
+      this.gameArea.x,
       this.battlefieldZone.y + this.battlefieldZone.height,
-      gameWidth,
-      gameHeight - this.battlefieldZone.height
+      this.gameArea.width,
+      this.gameArea.height - this.battlefieldZone.height
     );
   }
   
@@ -1656,53 +1630,142 @@ this.scale.off('resize', this.handleResize, this);
   }
 
   /**
-   * Финальная надпись уровня (ПОБЕДА/GAME OVER): плавно гаснет, чтобы
-   * не перекрывала поле; состояние уровня сбрасывает её принудительно
+   * Поп-ап конца уровня (победа/поражение): затемнение игровой области,
+   * надпись по центру и кнопки. Кнопки активируются только спустя ~1 сек
+   * после появления — защита от инерции быстрых тапов по монстрам.
    */
-  private showEndMessage(message: string, color: string): void {
-    if (this.endText) {
-      this.endText.destroy();
-      this.endText = null;
-    }
-    const t = this.add.text(
-      this.cameras.main.centerX,
-      this.cameras.main.centerY,
-      message,
-      {
-        font: `${48 * UI_SCALE}px Arial`,
-        color,
-        stroke: '#000000',
-        strokeThickness: 4 * UI_SCALE
-      }
-    );
-    t.setOrigin(0.5).setDepth(1100);
-    this.endText = t;
+  private createEndPopup(
+    title: string,
+    color: string,
+    buttons: Array<{ label: string; color: number; onClick: () => void }>
+  ): Phaser.GameObjects.Container {
+    const g = this.gameArea;
+    const root = this.add.container(0, 0).setScrollFactor(0).setDepth(1300);
 
-    this.tweens.add({
-      targets: t,
-      alpha: 0,
-      delay: 1800,
-      duration: 700,
-      onComplete: () => {
-        t.destroy();
-        if (this.endText === t) {
-          this.endText = null;
-        }
-      }
+    const dim = this.add.graphics();
+    dim.fillStyle(0x000000, 0.72);
+    dim.fillRect(g.x, g.y, g.width, g.height);
+    root.add(dim);
+
+    const titleText = this.add.text(g.x + g.width / 2, g.y + g.height * 0.34, title, {
+      font: `bold ${fontPx(36)}px Arial`,
+      color,
+      stroke: '#000000',
+      strokeThickness: padPx(3),
+      align: 'center',
+      wordWrap: { width: g.width - padPx(40) }
+    }).setOrigin(0.5);
+    root.add(titleText);
+
+    const btnW = Math.min(g.width - padPx(60), fontPx(280));
+    const btnH = fontPx(52);
+    const gap = padPx(12);
+    const totalH = buttons.length * btnH + (buttons.length - 1) * gap;
+    const bx = g.x + g.width / 2 - btnW / 2;
+    let by = g.y + g.height * 0.58 - totalH / 2;
+
+    const zones: Phaser.GameObjects.Zone[] = [];
+    const visuals: Phaser.GameObjects.GameObject[] = [];
+
+    for (const b of buttons) {
+      const bg = this.add.graphics();
+      bg.fillStyle(b.color, 1);
+      bg.fillRoundedRect(bx, by, btnW, btnH, padPx(10));
+      root.add(bg);
+
+      const label = this.add.text(bx + btnW / 2, by + btnH / 2, b.label, {
+        font: `bold ${fontPx(16)}px Arial`,
+        color: '#ffffff'
+      }).setOrigin(0.5);
+      root.add(label);
+
+      const zone = this.add.zone(bx, by, btnW, btnH).setOrigin(0).setInteractive({ useHandCursor: true });
+      zone.on('pointerup', () => { b.onClick(); });
+      root.add(zone);
+
+      zones.push(zone);
+      visuals.push(bg, label);
+      by += btnH + gap;
+    }
+
+    // Кнопки неактивны и приглушены до истечения задержки
+    for (const z of zones) z.disableInteractive();
+    for (const v of visuals) (v as any).setAlpha?.(0.45);
+    this.time.delayedCall(1000, () => {
+      if (!root.active) return;
+      for (const z of zones) z.setInteractive({ useHandCursor: true });
+      for (const v of visuals) (v as any).setAlpha?.(1);
     });
+
+    return root;
+  }
+
+  private closeEndPopups(): void {
+    if (this.victoryPopup) {
+      this.victoryPopup.destroy(true);
+      this.victoryPopup = null;
+    }
+    if (this.defeatPopup) {
+      this.defeatPopup.destroy(true);
+      this.defeatPopup = null;
+    }
   }
 
   private showGameOver(): void {
+    // Монстры продолжают доходить до базы и после 0 HP, каждый вызов
+    // handleEnemyReachedBase снова звал бы showGameOver: без guard поп-ап
+    // пересоздавался бы и заново запускал секундную задержку кнопок
+    // (кнопка «Начать заново» активировалась бы только с последним монстром).
+    if (this.gameOverShown) return;
     this.gameOverShown = true;
-    this.showEndMessage('Deus mortuus est', '#ff0000');
+    this.closeEndPopups();
+    this.defeatPopup = this.createEndPopup('Deus mortuus est', '#ff0000', [
+      { label: 'НАЧАТЬ ЗАНОВО', color: 0x8b2e2e, onClick: () => this.onDefeatRestart() }
+    ]);
+  }
+
+  /** Поражение: забег с первого уровня (HP базы восстановлено, новый seed) */
+  private onDefeatRestart(): void {
+    this.closeEndPopups();
+    // Смена уровня на 1-й: пересчитываем базовые плотность и размер структур
+    // уровня. Иначе они оставались бы от уровня, на котором проиграли, и
+    // первый уровень генерировался бы по настройкам проигранного.
+    this.currentLevel = 1;
+    this.applyLevelGenerationSettings();
+    this.restartLevel(true);
+    this.persistTuning();
   }
 
   private showVictory(): void {
-    this.showEndMessage('Deus vivit', '#ffd700');
     // Первое прохождение уровня: бонус +10·N душ (PROGRESSION §3)
-    this.progression.completeLevel(this.currentLevel);
-    // Полноэкранный экран прокачки; большая кнопка ИГРАТЬ ведёт на следующий уровень
-    this.openProgressionScreen();
+    progression.completeLevel(this.currentLevel);
+    this.closeEndPopups();
+    this.victoryPopup = this.createEndPopup('Deus vivit', '#ffd700', [
+      { label: 'ИГРАТЬ ДАЛЬШЕ', color: 0x2e8b57, onClick: () => this.onVictoryNext() },
+      { label: 'ПРОКАЧКА', color: 0x2e5a8b, onClick: () => this.onVictoryUpgrade() }
+    ]);
+  }
+
+  private onVictoryNext(): void {
+    this.closeEndPopups();
+    this.nextLevel();
+  }
+
+  private onVictoryUpgrade(): void {
+    this.closeEndPopups();
+    this.openUpgradeScene();
+  }
+
+  /** Открыть сцену прокачки поверх усыплённого геймплея (состояние сохраняется) */
+  private openUpgradeScene(): void {
+    this.scene.launch('UpgradeScene');
+    this.scene.sleep();
+  }
+
+  /** Вызов из UpgradeScene: применить покупки и запустить следующий уровень */
+  requestNextLevel(): void {
+    this.applyAllProgression();
+    this.nextLevel();
   }
   
   private createHitEffect(x: number, y: number, radiusMul = 1): void {
@@ -1790,22 +1853,13 @@ this.scale.off('resize', this.handleResize, this);
   private popupUpdaters: Array<{ text: Phaser.GameObjects.Text, getValue: () => string }> = [];
 
   // --- Прокачка (мета-прогресс между забегами, PROGRESSION.md) ---
-  private progression = new UpgradeSystem(upgradeCatalog);
+  // Единый инстанс прогресса (progressionStore) общий с UpgradeScene.
   /** Начислять ли души за убийства (выключается при очистке уровня в рестарте) */
   private awardingSouls: boolean = true;
-  /** Полноэкранный экран прокачки (открывается на победе уровня) */
-  private progressionRoot: Phaser.GameObjects.Container | null = null;
-  /** Скроллящийся список параметров (группы по стихиям) */
-  private progressionContent: Phaser.GameObjects.Container | null = null;
-  /** Прокрутка списка: текущий сдвиг, границы, состояние жеста */
-  private progressionScrollY: number = 0;
-  private progressionMaxScroll: number = 0;
-  private progressionViewportTop: number = 0;
-  private progressionViewportBottom: number = 0;
-  private progDragging: boolean = false;
-  private progDragStartY: number = 0;
-  private progScrollStart: number = 0;
-  private progMoved: boolean = false;
+
+  // --- Поп-апы конца уровня (победа/поражение) ---
+  private victoryPopup: Phaser.GameObjects.Container | null = null;
+  private defeatPopup: Phaser.GameObjects.Container | null = null;
 
   private createSettingsButton(): void {
     if (this.settingsButton) {
@@ -2074,28 +2128,29 @@ this.scale.off('resize', this.handleResize, this);
   /** Восстановление тюнинга из localStorage (при create/restart) */
   private applyStoredTuning(): void {
     const snap = TuningStore.load();
+
+    // Уровень из снимка (влияет на базовые ген-параметры ниже)
+    if (snap && typeof snap.currentLevel === 'number') {
+      this.currentLevel = Phaser.Math.Clamp(Math.round(snap.currentLevel), 1, GameScene.MAX_LEVEL);
+    }
+    // Базовые плотность/размер структур уровня применяются ВСЕГДА (в т.ч.
+    // на чистой установке без снимка) — иначе остались бы дефолты полей.
+    // Оверрайды поп-апа из снимка ложатся поверх них ниже.
+    this.genDensity = GameScene.levelDensity(this.currentLevel);
+    this.genBlobScale = GameScene.levelBlobScale(this.currentLevel);
+
     if (!snap) return;
 
     if (typeof snap.spawnInterval === 'number') this.spawnInterval = snap.spawnInterval;
-    if (typeof snap.currentLevel === 'number') {
-      this.currentLevel = Phaser.Math.Clamp(Math.round(snap.currentLevel), 1, GameScene.MAX_LEVEL);
-    }
     if (typeof snap.maxEnemiesOnScreen === 'number') {
       this.maxEnemiesOnScreen = Math.min(Math.max(10, snap.maxEnemiesOnScreen), MAX_AGENTS);
     }
     if (typeof snap.enemySize === 'number') this.enemySize = snap.enemySize;
     if (typeof snap.genBlobScale === 'number') {
       this.genBlobScale = snap.genBlobScale;
-    } else {
-      // Нет сохранённого оверрайда — базовый размер структур уровня
-      this.genBlobScale = GameScene.levelBlobScale(this.currentLevel);
     }
     if (typeof snap.genDensity === 'number') {
       this.genDensity = snap.genDensity;
-    } else {
-      // Нет сохранённого оверрайда — плотность базовой (уровень только
-      // что восстановлен из снимка, см. выше)
-      this.genDensity = GameScene.levelDensity(this.currentLevel);
     }
 
     if (snap.godPower) {
@@ -2135,9 +2190,9 @@ this.scale.off('resize', this.handleResize, this);
 
   /** Полный сброс «fresh start»: стирает прокачку и тюнинг, восстанавливает
    *  дефолтные значения и перезапускает игру с первого уровня. */
-  private resetAllProgress(): void {
+  public resetAllProgress(): void {
     // 1. Стираем мета-прогресс: души = 0, уровни = 0, пройденные уровни = ∅.
-    this.progression.resetAll();
+    progression.resetAll();
     // 2. GameConfig возвращается к базовым значениям баланса (level 0 из CSV)
     this.applyAllProgression();
     // 3. Поля, не покрытые каталогом прокачки: радиус штриха стихий — к дефолту
@@ -2158,270 +2213,6 @@ this.scale.off('resize', this.handleResize, this);
     this.persistTuning();
   }
 
-  // --- Прокачка: полноэкранный экран ---
-
-  /** Группы параметров по стихиям (порядок: Огонь, Вода, Земля, Воздух, Бог) */
-  private buildProgressionGroups(): Array<{ name: string; defs: UpgradeDef[] }> {
-    const byEl: Record<string, UpgradeDef[]> = {};
-    for (const d of upgradeDefs) {
-      const k = d.element ?? 'god';
-      (byEl[k] = byEl[k] ?? []).push(d);
-    }
-    const nameMap: Record<string, string> = {
-      fire: '🔥 Огонь',
-      water: '💧 Вода',
-      earth: '🌍 Земля',
-      air: '💨 Воздух',
-      god: '⚡ Сила бога'
-    };
-    return ['fire', 'water', 'earth', 'air', 'god'].map((k) => ({
-      name: nameMap[k],
-      defs: byEl[k] ?? []
-    }));
-  }
-
-  /** Открыть полноэкранный экран прокачки (на победе уровня).
-   *  ВАЖНОЕ ПРАВИЛО: все окна/попапы/экраны живут ВНУТРИ this.gameArea
-   *  (границ игрового поля 9:19.5), а не на всю ширину устройства. */
-  private openProgressionScreen(): void {
-    this.closeProgressionScreen();
-    const g = this.gameArea; // Rectangle: x, y, width, height (игровое поле)
-    const gx = g.x;
-    const gy = g.y;
-    const gw = g.width;
-    const gh = g.height;
-
-    const root = this.add.container(0, 0).setScrollFactor(0).setDepth(1250);
-    this.progressionRoot = root;
-
-    // Фон внутри границ игрового поля + обводка
-    const bg = this.add.graphics();
-    bg.fillStyle(0x070b14, 0.985);
-    bg.fillRect(gx, gy, gw, gh);
-    bg.lineStyle(padPx(2), 0x1a2b4a, 1);
-    bg.strokeRect(gx, gy, gw, gh);
-    root.add(bg);
-
-    // --- Шапка: заголовок + баланс душ + служебный сброс ---
-    const pad = padPx(14);
-    const headerH = fontPx(72);
-    root.add(this.add.text(gx + gw / 2, gy + pad + fontPx(12), 'ПРОКАЧКА', {
-      font: `bold ${fontPx(22)}px Arial`,
-      color: '#ffffff'
-    }).setOrigin(0.5, 0));
-    root.add(this.add.text(gx + gw / 2, gy + pad + fontPx(44), `Души: ${this.progression.totalSouls}`, {
-      font: `bold ${fontPx(15)}px Arial`,
-      color: '#ffd700'
-    }).setOrigin(0.5, 0));
-
-    // Кнопка полного сброса «fresh start»: стирает прокачку, значения и
-    // отправляет на первый уровень. Справа сверху, прижата к краю окна
-    // (origin(1,0) — правый край никогда не вылезает за окно);
-    // если текст шире окна — кегль уменьшается, пока не впишется
-    const btnY = gy + pad + fontPx(2);
-    const btnPad = padPx(6);
-    const btnBg = '#1a1f2e';
-    const maxBtnW = gw - pad * 2 - padPx(2);
-    let btnFont = 14;
-    let resetBtn = this.add.text(0, 0, '↺ Сбросить прогресс', {
-      font: `bold ${fontPx(btnFont)}px Arial`,
-      color: '#ff6666',
-      backgroundColor: btnBg,
-      padding: { x: btnPad, y: padPx(2) }
-    });
-    while (resetBtn.width > maxBtnW && btnFont > 8) {
-      btnFont--;
-      resetBtn.destroy();
-      resetBtn = this.add.text(0, 0, '↺ Сбросить прогресс', {
-        font: `bold ${fontPx(btnFont)}px Arial`,
-        color: '#ff6666',
-        backgroundColor: btnBg,
-        padding: { x: btnPad, y: padPx(2) }
-      });
-    }
-    resetBtn.setOrigin(1, 0).setPosition(gx + gw - pad, btnY)
-      .setInteractive({ useHandCursor: true });
-    resetBtn.on('pointerover', () => resetBtn.setStyle({ color: '#ff8888' }));
-    resetBtn.on('pointerout', () => resetBtn.setStyle({ color: '#ff6666' }));
-    resetBtn.on('pointerdown', () => this.resetAllProgress());
-
-    root.add(resetBtn);
-
-    // --- Область списка (внутри игрового поля) ---
-    const bottomH = fontPx(96);
-    const viewportTop = gy + headerH;
-    const viewportBottom = gy + gh - bottomH;
-    this.progressionViewportTop = viewportTop;
-    this.progressionViewportBottom = viewportBottom;
-    const viewportW = gw;
-
-    // Маска: содержимое списка видно только между шапкой и нижней панелью
-    const maskRect = this.make.graphics({ x: 0, y: 0 }, false);
-    maskRect.fillRect(gx, viewportTop, viewportW, viewportBottom - viewportTop);
-    const mask = new Phaser.Display.Masks.GeometryMask(this, maskRect);
-
-    const content = this.add.container(0, viewportTop).setMask(mask);
-    root.add(content);
-    this.progressionContent = content;
-
-    this.rebuildProgressionContent();
-    this.setProgressionScroll(0);
-
-    // --- Нижняя панель: большая кнопка ИГРАТЬ (внутри игрового поля) ---
-    const playH = fontPx(58);
-    const playW = Math.min(gw - pad * 2, fontPx(320));
-    const playX = gx + gw / 2 - playW / 2;
-    const playY = gy + gh - bottomH / 2 - playH / 2 + fontPx(8);
-    const playBg = this.add.graphics();
-    playBg.fillStyle(0x2e8b57, 1);
-    playBg.fillRoundedRect(playX, playY, playW, playH, padPx(12));
-    root.add(playBg);
-    root.add(this.add.text(gx + gw / 2, playY + playH / 2, '▶ ИГРАТЬ', {
-      font: `bold ${fontPx(20)}px Arial`,
-      color: '#ffffff'
-    }).setOrigin(0.5));
-    const playZone = this.add.zone(playX, playY, playW, playH).setOrigin(0).setInteractive({ useHandCursor: true });
-    playZone.on('pointerdown', () => {
-      this.closeProgressionScreen();
-      this.nextLevel();
-    });
-    root.add(playZone);
-  }
-
-  private closeProgressionScreen(): void {
-    if (this.progressionRoot) {
-      this.progressionRoot.destroy(true);
-      this.progressionRoot = null;
-    }
-    this.progressionContent = null;
-    this.progDragging = false;
-  }
-
-  /** Сдвиг списка (clamp к границам). Контент уезжает ВВЕРХ при скролле вниз —
-   *  setY = viewportTop − scroll, иначе низ списка (Сила бога) недостижим. */
-  private setProgressionScroll(y: number): void {
-    this.progressionScrollY = Phaser.Math.Clamp(y, 0, this.progressionMaxScroll);
-    if (this.progressionContent) {
-      this.progressionContent.setY(this.progressionViewportTop - this.progressionScrollY);
-    }
-  }
-
-  /** Пересобрать список параметров (группы по стихиям) и баланс душ */
-  private rebuildProgressionContent(): void {
-    if (!this.progressionRoot || !this.progressionContent) return;
-    this.progressionContent.removeAll(true);
-    // Обновить баланс душ в шапке
-    const root = this.progressionRoot;
-    root.each((child: Phaser.GameObjects.GameObject) => {
-      const t = child as Phaser.GameObjects.Text;
-      if (t && (t as any).text && String((t as any).text).startsWith('Души:')) {
-        t.setText(`Души: ${this.progression.totalSouls}`);
-      }
-    });
-
-    const viewportW = this.gameArea.width;
-    const pad = padPx(14);
-    const groupH = fontPx(32);
-    const content = this.progressionContent;
-
-    let y = 0;
-    for (const g of this.buildProgressionGroups()) {
-      // Заголовок группы (x — мировые координаты: gx + отступ)
-      const headerText = this.add.text(this.gameArea.x + pad, y + padPx(2), g.name, {
-        font: `bold ${fontPx(14)}px Arial`,
-        color: '#ffd700'
-      });
-      content.add(headerText);
-      y += Math.max(groupH, headerText.height + padPx(8));
-      for (const def of g.defs) {
-        y += this.renderProgressionRow(content, def, y, viewportW, pad);
-      }
-      y += fontPx(8);
-    }
-
-    // Нижний отступ: последняя группа (Сила бога) полностью видна над кнопкой ИГРАТЬ
-    y += fontPx(40);
-
-    const contentH = y;
-    this.progressionMaxScroll = Math.max(0, contentH - (this.progressionViewportBottom - this.progressionViewportTop));
-    this.setProgressionScroll(this.progressionScrollY);
-  }
-
-  /** Одна строка параметра: название · значение → следующее · [КУПИТЬ].
-   *  Возвращает реальную высоту строки (заголовок может переноситься). */
-  private renderProgressionRow(
-    container: Phaser.GameObjects.Container,
-    def: UpgradeDef,
-    y: number,
-    viewportW: number,
-    pad: number
-  ): number {
-    const gx = this.gameArea.x;
-    const rowH = fontPx(28);
-    const labelW = viewportW * 0.46;
-    const leftX = gx + pad;
-
-    const titleText = this.add.text(leftX, y + padPx(3), def.title, {
-      font: `${fontPx(12)}px Arial`,
-      color: '#bbbbbb',
-      wordWrap: { width: labelW }
-    });
-    container.add(titleText);
-
-    container.add(this.add.text(leftX + labelW + padPx(4), y + padPx(3), this.rowValue(def), {
-      font: `bold ${fontPx(12)}px Arial`,
-      color: '#ffffff'
-    }));
-
-    const cost = this.progression.costOf(def.key);
-    const btnW = fontPx(70);
-    const btnX = gx + viewportW - pad - btnW;
-    if (cost === null) {
-      container.add(this.add.text(btnX + btnW / 2, y + padPx(3), 'MAX', {
-        font: `bold ${fontPx(12)}px Arial`,
-        color: '#888888'
-      }).setOrigin(0.5, 0));
-    } else {
-      const affordable = this.progression.totalSouls >= cost;
-      const btnBg = this.add.graphics();
-      btnBg.fillStyle(affordable ? 0x2e7d32 : 0x444444, 1);
-      btnBg.fillRoundedRect(btnX, y, btnW, rowH - padPx(2), padPx(6));
-      container.add(btnBg);
-      container.add(this.add.text(btnX + btnW / 2, y + padPx(3), `🛒 ${cost}`, {
-        font: `bold ${fontPx(11)}px Arial`,
-        color: '#ffffff'
-      }).setOrigin(0.5, 0));
-      const zone = this.add.zone(btnX, y, btnW, rowH).setOrigin(0).setInteractive({ useHandCursor: true });
-      // Покупка по pointerup, чтобы драг-скролл, начавшийся на кнопке, не покупал
-      zone.on('pointerdown', () => { this.progMoved = false; });
-      zone.on('pointerup', () => {
-        if (this.progMoved) return;
-        if (this.buyUpgrade(def.key)) {
-          this.rebuildProgressionContent();
-        }
-      });
-      container.add(zone);
-    }
-
-    // Реальная высота: перенос заголовка или базовый rowH
-    return Math.max(rowH, titleText.height + padPx(6));
-  }
-
-  /** Строка «текущее → следующее» для параметра */
-  private rowValue(def: UpgradeDef): string {
-    const level = this.progression.levelOf(def.key);
-    const cur = valueAt(def, level);
-    const next = valueAt(def, Math.min(level + 1, def.values.length - 1));
-    return `${displayValue(def, cur)} → ${displayValue(def, next)}`;
-  }
-
-  /** Покупка уровня параметра: списать души + применить в конфиг */
-  private buyUpgrade(key: string): boolean {
-    if (!this.progression.buy(key)) return false;
-    this.applyProgression(key);
-    return true;
-  }
-
   /** Новый seed и полный перезапуск сцены с новой генерацией уровня */
   private regenerateLevelWithNewSeed(): void {
     this.levelSeed = 'seed-' + Math.floor(Math.random() * 1e9).toString(36);
@@ -2437,19 +2228,14 @@ this.scale.off('resize', this.handleResize, this);
     // Тапы по поп-апу настроек поле боя не затрагивают
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       if (this.settingsOpen) return;
-      // Полноэкранный экран прокачки закрывает поле боя
-      if (this.progressionRoot) return;
       if (!this.battlefieldZone.contains(pointer.x, pointer.y)) return;
 
       if (this.victoryShown) {
-        // Прогресс продолжается через кнопки экрана прокачки
+        // Прогресс продолжается через кнопки поп-апа победы
         return;
       }
       if (this.gameOverShown) {
-        // Поражение: прогресс сбрасывается на первый уровень (свежая игра)
-        this.currentLevel = 1;
-        this.restartLevel(true);
-        this.persistTuning();
+        // Поражение: рестарт — через кнопку поп-апа поражения
         return;
       }
 
@@ -2503,30 +2289,6 @@ this.scale.off('resize', this.handleResize, this);
       }
       this.refreshAltarBars();
     });
-
-    // Прокрутка списка на экране прокачки: драг в области списка двигает содержимое
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (!this.progressionRoot || this.progDragging) return;
-      if (pointer.y < this.progressionViewportTop || pointer.y > this.progressionViewportBottom) return;
-      this.progDragging = true;
-      this.progMoved = false;
-      this.progDragStartY = pointer.y;
-      this.progScrollStart = this.progressionScrollY;
-    });
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (!this.progDragging) return;
-      const delta = this.progDragStartY - pointer.y;
-      if (Math.abs(delta) > 4) this.progMoved = true;
-      this.setProgressionScroll(this.progScrollStart + delta);
-    });
-    this.input.on('pointerup', () => {
-      this.progDragging = false;
-    });
-    // Колесо мыши на десктопе
-    this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _over: any, _deltaX: number, deltaY: number) => {
-      if (!this.progressionRoot) return;
-      this.setProgressionScroll(this.progressionScrollY + deltaY * 0.6);
-    });
   }
   private fireGodTap(x: number, y: number): void {
     if (this.godPower.isArmed) {
@@ -2543,11 +2305,16 @@ this.scale.off('resize', this.handleResize, this);
     this.currentLevel = Phaser.Math.Clamp(level, 1, GameScene.MAX_LEVEL);
     // Новый уровень задаёт свои базовые плотность и размер структур
     // (оверрайды поп-апа сбрасываются только при смене уровня, не при рестартах)
-    this.genDensity = GameScene.levelDensity(this.currentLevel);
-    this.genBlobScale = GameScene.levelBlobScale(this.currentLevel);
+    this.applyLevelGenerationSettings();
     this.restartLevel(false);
     // Прогресс уровня запоминается и для победы (nextLevel), и для поп-апа
     this.persistTuning();
+  }
+
+  /** Базовые плотность и размер структур текущего уровня (при смене уровня) */
+  private applyLevelGenerationSettings(): void {
+    this.genDensity = GameScene.levelDensity(this.currentLevel);
+    this.genBlobScale = GameScene.levelBlobScale(this.currentLevel);
   }
 
   /** Победа: следующий уровень (на 100 монстров больше) */
@@ -2575,14 +2342,8 @@ this.scale.off('resize', this.handleResize, this);
   /** Применить все сохранённые уровни прокачки в GameConfig (при старте/ресете) */
   private applyAllProgression(): void {
     for (const key of Object.keys(upgradeCatalog)) {
-      upgradeCatalog[key].apply(this.progression.levelOf(key));
+      upgradeCatalog[key].apply(progression.levelOf(key));
     }
-    this.syncProgressionSystems();
-  }
-
-  /** Применить один параметр после покупки и синхронизировать системы */
-  private applyProgression(key: string): void {
-    upgradeCatalog[key].apply(this.progression.levelOf(key));
     this.syncProgressionSystems();
   }
 
@@ -2595,12 +2356,8 @@ this.scale.off('resize', this.handleResize, this);
   }
 
   private restartLevel(restoreHealth: boolean): void {
-    if (this.endText) {
-      this.endText.destroy();
-      this.endText = null;
-    }
-    // Оверлеи прокачки привязаны к завершённому уровню — убираем
-    this.closeProgressionScreen();
+    // Поп-апы конца уровня привязаны к завершённому уровню — убираем
+    this.closeEndPopups();
     // Скорость и плотность уровня (сбрасывает сессионный оверрайд поп-апа)
     this.applyLevelScaling();
     // Каждый уровень — новая генерация
@@ -2745,7 +2502,7 @@ this.scale.off('resize', this.handleResize, this);
     // 1 душа за каждое убийство (PROGRESSION §3); не начисляется при
     // принудительной очистке уровня в рестарте (awardingSouls = false)
     if (this.awardingSouls) {
-      this.progression.addSouls(1);
+      progression.addSouls(1);
     }
   }
 
