@@ -2161,6 +2161,12 @@ export class GameScene extends Phaser.Scene {
       () => `x${this.genBlobScale.toFixed(1)}`
     );
 
+    addRow('Интервал спавна (мс)',
+      () => { this.spawnInterval = Math.max(0, +(this.spawnInterval - 0.5).toFixed(1)); },
+      () => { this.spawnInterval = Math.min(100, +(this.spawnInterval + 0.5).toFixed(1)); },
+      () => `${this.spawnInterval.toFixed(1)}`
+    );
+
     // --- Силы жидкости: в конфиге (GameConfig.enemies.fluid), из поп-апа
     // убраны как перегруз UI; тюнинг — через код/«Сброс сил» ---
 
